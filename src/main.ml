@@ -341,8 +341,14 @@ and pp_nix_str ppf pieces = pieces |> List.iter
 
 let pp_nix_expr = pp_nix_expr_prec `PImpl
 
-let pp_nix_pkg ppf nix_pkg =
+let pp_nix_pkg ?opam ppf nix_pkg =
   let open Format in
+  (match opam with
+  | None -> ();
+  | Some file ->
+      fprintf ppf "/*@[";
+      pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
+      fprintf ppf "@]*/@;");
   fprintf ppf "@[{@ @[";
   let pp_arg ppf (name, d) =
     pp_print_text ppf (OpamPackage.Name.to_string name) ;
@@ -737,8 +743,7 @@ let lint =
             opam
               |> OpamStd.Option.map OpamFormatUpgrade.opam_file_from_1_2_to_2_0
               |> OpamStd.Option.iter (fun upgraded ->
-                   OpamFile.OPAM.write_to_channel stdout upgraded;
-                   Format.printf "%a" pp_nix_pkg @@ nix_of_opam upgraded);
+                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam upgraded);
             err || failed
           with
           | Parsing.Parse_error

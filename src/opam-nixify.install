@@ -1,0 +1,16 @@
+lib: [
+  "_build/install/default/lib/opam-nixify/META" {"META"}
+  "_build/install/default/lib/opam-nixify/opam" {"opam"}
+  "_build/install/default/lib/opam-nixify/nixify.cmi" {"nixify.cmi"}
+  "_build/install/default/lib/opam-nixify/nixify.cmx" {"nixify.cmx"}
+  "_build/install/default/lib/opam-nixify/nixify.cmt" {"nixify.cmt"}
+  "_build/install/default/lib/opam-nixify/nixify.ml" {"nixify.ml"}
+  "_build/install/default/lib/opam-nixify/opam_nixify.cma" {"opam_nixify.cma"}
+  "_build/install/default/lib/opam-nixify/opam_nixify.cmxa" {"opam_nixify.cmxa"}
+  "_build/install/default/lib/opam-nixify/opam_nixify.a" {"opam_nixify.a"}
+  "_build/install/default/lib/opam-nixify/opam_nixify.cmxs" {"opam_nixify.cmxs"}
+  "_build/install/default/lib/opam-nixify/opam-nixify.dune" {"opam-nixify.dune"}
+]
+bin: [
+  "_build/install/default/bin/opam-nixify" {"opam-nixify"}
+]

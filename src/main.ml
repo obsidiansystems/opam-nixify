@@ -622,13 +622,13 @@ let nix_of_opam ?name ?version opam =
   (* TODO handle metadata_dir *)
   { pname = name; version; deps; conflicts; build; src }
 
-(* LINT *)
-let lint_doc = "Checks and validate package description ('opam') files."
-let lint =
-  let doc = lint_doc in
+(* NIXIFY *)
+let nixify_doc = "Generates nix expressions from $(i,opam) files."
+let nixify =
+  let doc = nixify_doc in
   let man = [
     `S "DESCRIPTION";
-    `P "Given an $(i,opam) file, performs several quality checks on it and \
+    `P "Given an $(i,opam) file,  \
         outputs recommendations, warnings or errors on stderr."
   ] in
   let files =
@@ -637,13 +637,9 @@ let lint =
            ~doc:"Name of the opam files to check, or directory containing \
                  them. Current directory if unspecified")
   in
-  let short =
-    OpamArg.mk_flag ["short";"s"]
-      "Only print the warning/error numbers, space-separated, if any"
-  in
   let warnings =
     OpamArg.mk_opt ["warnings";"W"] "WARNS"
-      "Select the warnings to show or hide. $(i,WARNS) should be a \
+      "Select the lint warnings to show or hide. $(i,WARNS) should be a \
        concatenation of $(b,+N), $(b,-N), $(b,+N..M), $(b,-N..M) to \
        respectively enable or disable warning or error number $(b,N) or \
        all warnings with numbers between $(b,N) and $(b,M) inclusive.\n\
@@ -657,7 +653,7 @@ let lint =
        an opam file directly."
       Arg.(some OpamArg.package) None
   in
-  let lint global_options files package short warnings_sel =
+  let nixify global_options files package warnings_sel =
     OpamArg.apply_global_options global_options;
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
@@ -728,12 +724,7 @@ let lint =
             let failed =
               List.exists (function _,`Error,_ -> true | _ -> false) warnings
             in
-            if short then
-              (if warnings <> [] then
-                 msg "%s\n"
-                   (OpamStd.List.concat_map " " (fun (n,_,_) -> string_of_int n)
-                      warnings))
-            else if warnings <> [] then
+            if warnings <> [] then
               msg "%s%s\n%s\n"
                 (OpamStd.Option.to_string (fun f -> OpamFile.to_string f ^ ": ")
                    opam_f)
@@ -755,12 +746,12 @@ let lint =
     in
     if err then OpamStd.Sys.exit_because `False
   in
-  Term.(const lint $OpamArg.global_options $files $package $short $warnings),
-  OpamArg.term_info "lint" ~doc ~man
+  Term.(const nixify $OpamArg.global_options $files $package $warnings),
+  OpamArg.term_info "nixify" ~doc ~man
 
 let () =
   OpamStd.Sys.at_exit (fun () ->
       flush stderr;
       flush stdout;
     );
-  run (lint)
+  run (nixify)

@@ -556,7 +556,6 @@ let nix_src_of_opam name version opam =
         | Ok None -> Done (Ok rs)
         | Ok (Some (url, name, file)) ->
           OpamSystem.make_command "nix-hash" ["--type"; "sha256"; "--base32"; "--flat"; OpamFilename.to_string file] @@> (fun result ->
-            Printf.printf "%s\n" (List.hd result.r_cleanup);
             OpamProcess.cleanup ~force:true result;
             if OpamProcess.is_success result then
               let fetch = `NSet ["url", `NStr (OpamUrl.to_string url); "sha256", `NStr (List.hd @@ result.r_stdout)] in

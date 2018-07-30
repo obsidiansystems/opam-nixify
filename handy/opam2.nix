@@ -23,8 +23,8 @@ let
       sha256 = "00yvyfm4j423zqndvgc1ycnmiffaa2l9ab40cyg23pf51qmzk2jm";
     };
     extlib = fetchurl {
-      url = "http://ygrek.org.ua/p/release/ocaml-extlib/extlib-1.7.4.tar.gz";
-      sha256 = "18jb4rvkk6p3mqnkamwb41x8q49shgn43h020bs4cp4vac7nrhnr";
+      url = "http://ygrek.org.ua/p/release/ocaml-extlib/extlib-1.7.5.tar.gz";
+      sha256 = "19slqf5bdj0rrph2w41giwmn6df2qm07942jn058pjkjrnk30d4s";
     };
     jbuilder = fetchurl {
       url = "https://github.com/ocaml/dune/releases/download/1.0+beta20/jbuilder-1.0.beta20.tbz";
@@ -50,14 +50,15 @@ let
       url = "https://github.com/janestreet/result/releases/download/1.3/result-1.3.tbz";
       sha256 = "1lrnbxdq80gbhnp85mqp1kfk0bkh6q1c93sfz2qgnq2qyz60w4sk";
     };
+    # NOTE: Temporary use of fork.
     opam = fetchurl {
-      url = "https://github.com/ocaml/opam/archive/2.0.0-rc3.zip";
-      sha256 = "0swjyvg9b3c4h92bdafa95yk75s5pacqpi33aycav19xm0s087rf";
+      url = "https://github.com/obsidiansystems/opam/archive/0d21176add6428ebf10d3307d6e19979ff8b78bd.zip";
+      sha256 = "0fbmvv68mi30sdgd5fn6kd1llrf8l5kb4ffvlb96lxb1pmrgz4kq";
     };
   };
 in stdenv.mkDerivation rec {
   name = "opam-${version}";
-  version = "2.0.0-rc3";
+  version = "2.0.0";
 
   buildInputs = [ unzip curl ncurses ocaml makeWrapper];
 

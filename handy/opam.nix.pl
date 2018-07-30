@@ -3,7 +3,7 @@
 use strict;
 use warnings qw<all>;
 
-my $OPAM_RELEASE = "2.0.0-rc3";
+my $OPAM_RELEASE = "2.0.0";
 my $OPAM_RELEASE_SHA256 = `nix-prefetch-url https://github.com/ocaml/opam/archive/$OPAM_RELEASE.zip`;
 chomp $OPAM_RELEASE_SHA256;
 

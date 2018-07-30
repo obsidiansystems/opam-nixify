@@ -91,7 +91,7 @@ type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_b
 type nix_bool = [`NTrue | `NFalse | vnix_bool]
 *)
 
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr)]
 type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 
 type nix_pkg = {
@@ -134,6 +134,10 @@ let nix_impl l r = match l, r with
   | _, `NTrue -> r
   | _, `NFalse -> nix_not l
   | x , y -> `NOr (x,y)
+let nix_if c t e = match c with
+  | `NTrue -> t
+  | `NFalse -> e
+  | _ -> `NIf (c,t,e)
 let nix_var (v : string) = `NVar v
 let nix_null = `NNull
 let nix_str (s : string) = `NStr s
@@ -145,6 +149,11 @@ let nix_eq l r = match l, r with
   | _, _ -> `NEq (l,r)
 let nix_neq l r = nix_not (nix_eq l r)
 let nix_list vs = `NList vs
+let nix_is_bool x = match x with
+  | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) -> `NTrue
+  | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ -> `NFalse
+  | _ -> `NAp (`NAttr (`NVar "builtin","isBool"),x)
+let nix_stringify x = nix_if (nix_is_bool x) (nix_if x (nix_str "true") (nix_str "false")) x
 let nix_stri ls = match ls with
   | [] -> nix_str ""
   | `NLit l :: [] -> nix_str l
@@ -161,10 +170,10 @@ let rec nix_strc ls r = match ls, r with
   | x :: [], r -> [x; `NInterp r]
   | l :: ls, r -> l :: nix_strc ls r
   | _ -> raise Waat
-let nix_strp l r = match l, r with
+let nix_str_append l r = match nix_stringify l, nix_stringify r with
   | `NStrI ss, r -> nix_stri @@ nix_strc ss r
   | `NStr s, r -> nix_stri @@ nix_strc [`NLit s] r
-  | _, _ -> nix_stri @@ nix_strc [`NInterp l] r
+  | l, r -> nix_stri @@ nix_strc [`NInterp l] r
 
 let nix_escape s = Re.replace (Re.compile (Re.alt [Re.char '\\'; Re.char '"'; Re.str "${"; Re.str "\n"])) ~f:(fun g -> "\\" ^ (fun c -> if c = "\n" then "n" else c) (Re.Group.get g 0)) s
 let shell_escape s = "'" ^ Re.replace (Re.compile (Re.char '\'')) ~f:(fun _ -> "'\\''") s ^ "'"
@@ -234,7 +243,7 @@ let rec pp_nix_expr_prec prec ppf nb =
   match nb with
   | `NAnd (l,r) ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd -> false
+        | `PElse | `PImpl | `POr | `PAnd -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -244,7 +253,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NOr (l,r) ->
       let paren = match prec with
-        | `PImpl | `POr -> false
+        | `PElse | `PImpl | `POr -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -254,6 +263,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NImpl (l,r) ->
       let paren = match prec with
+        | `PElse -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -263,7 +273,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NNot v ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd | `PEq -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -277,7 +287,7 @@ let rec pp_nix_expr_prec prec ppf nb =
   | `NNull -> pp_print_text ppf "null"
   | `NAp (f, x) ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd | `PEq | `PNot -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -287,7 +297,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NEq (l,r) ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd -> false
+        | `PElse | `PImpl | `POr | `PAnd -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -297,7 +307,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NNeq (l,r) ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd -> false
+        | `PElse | `PImpl | `POr | `PAnd -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -307,7 +317,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NAttr (l,a) ->
       let paren = match prec with
-        | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAp | `PAttr -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAp | `PAttr -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -327,19 +337,32 @@ let rec pp_nix_expr_prec prec ppf nb =
   | `NSet attributes ->
       fprintf ppf "{@ @[";
       attributes |> List.iter (fun (k,v) ->
-        fprintf ppf "%s@ =@[@ %a@];@;" k (pp_nix_expr_prec `PImpl) v
+        fprintf ppf "%s@ =@[@ %a@];@;" k (pp_nix_expr_prec `PElse) v
       );
       fprintf ppf "@ @]}"
+  | `NIf (cond,tbranch,ebranch) ->
+      let paren = match prec with
+        | _ -> false
+      in
+      if paren then pp_print_text ppf "(" else ();
+      fprintf ppf "@[if@ @[";
+      pp_nix_expr_prec `PElse ppf cond;
+      fprintf ppf "@]@ @[@,then@[@ ";
+      pp_nix_expr_prec `PElse ppf tbranch;
+      fprintf ppf "@]@ else@[@ ";
+      pp_nix_expr_prec `PElse ppf ebranch;
+      fprintf ppf "@,@]@,@]";
+      if paren then pp_print_text ppf ")" else ()
 and pp_nix_str ppf pieces = pieces |> List.iter
   (fun piece -> let open Format in
      match piece with
      | `NLit s -> pp_print_text ppf @@ nix_escape s
      | `NInterp exp ->
        pp_print_text ppf "${";
-       pp_nix_expr_prec `PImpl ppf exp;
+       pp_nix_expr_prec `PElse ppf exp;
        pp_print_text ppf "}")
 
-let pp_nix_expr = pp_nix_expr_prec `PImpl
+let pp_nix_expr = pp_nix_expr_prec `PElse
 
 let pp_nix_pkg ?opam ppf nix_pkg =
   let open Format in
@@ -463,7 +486,7 @@ let nix_expand_string s = let f = function
     else resolve_ident @@ parse_ident (String.sub str 2 (String.length str - 4)))
   | `Text t -> nix_str (shell_escape t)
   in
-  List.fold_right (fun x -> nix_strp (f x)) (Re.split_full string_interp_regex s) (nix_str "")
+  List.fold_right (fun x -> nix_str_append (f x)) (Re.split_full string_interp_regex s) (nix_str "")
 
 let nix_expr_of_arg = function
   | CString s -> nix_list [nix_expand_string s]

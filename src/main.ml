@@ -416,7 +416,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "src = ";
   pp_nix_expr ppf nix_pkg.src;
-  (match List.map (fun (name,src) -> nix_str_append (nix_str "ln -sv ") (nix_str_append src (nix_str @@ " " ^ OpamFilename.Base.to_string name))) nix_pkg.extra_src with
+  (match List.map (fun (name,src) -> nix_str_append (nix_str "ln -sv ") (nix_str_append src (nix_str @@ " \"$sourceRoot\"/" ^ OpamFilename.Base.to_string name))) nix_pkg.extra_src with
   | [] -> ()
   | x::xs ->
       fprintf ppf ";@ ";

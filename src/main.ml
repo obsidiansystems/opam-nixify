@@ -326,8 +326,8 @@ let rec pp_nix_expr_prec prec ppf nb =
       pp_print_text ppf a;
       if paren then pp_print_text ppf ")" else ()
   | `NStr s ->
-      fprintf ppf "\"%s\"" @@ nix_escape s
-  | `NStrI pieces -> fprintf ppf "\"%a\"" pp_nix_str pieces
+      fprintf ppf "@[<h>\"%s\"@]" @@ nix_escape s
+  | `NStrI pieces -> fprintf ppf "@[<h>\"%a\"@]" pp_nix_str pieces
   | `NList pieces ->
       fprintf ppf "[@ @[";
       pieces |> List.iter (fun x ->

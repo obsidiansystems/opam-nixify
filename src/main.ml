@@ -417,7 +417,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
   pp_nix_expr ppf nix_pkg.build;
   fprintf ppf ";@ ";
-  fprintf ppf "installPhase = \"${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR\"";
+  fprintf ppf "installPhase = \"mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
   fprintf ppf ";@ ";
   fprintf ppf "createFindLibDestdir = true";
   fprintf ppf ";@ ";

@@ -91,7 +91,7 @@ type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_b
 type nix_bool = [`NTrue | `NFalse | vnix_bool]
 *)
 
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr)]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string]
 type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 
 type nix_pkg = {
@@ -151,7 +151,7 @@ let nix_neq l r = nix_not (nix_eq l r)
 let nix_list vs = `NList vs
 let nix_is_bool x = match x with
   | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) -> `NTrue
-  | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ -> `NFalse
+  | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ | `NPath _ -> `NFalse
   | _ -> `NAp (`NAttr (`NVar "builtin","isBool"),x)
 let nix_stringify x = nix_if (nix_is_bool x) (nix_if x (nix_str "true") (nix_str "false")) x
 let nix_stri ls = match ls with
@@ -174,6 +174,9 @@ let nix_str_append l r = match nix_stringify l, nix_stringify r with
   | `NStrI ss, r -> nix_stri @@ nix_strc ss r
   | `NStr s, r -> nix_stri @@ nix_strc [`NLit s] r
   | l, r -> nix_stri @@ nix_strc [`NInterp l] r
+let nix_path s = match String.index_opt s '/' with
+  | None -> `NPath ("./" ^ s)
+  | Some _ -> `NPath s
 
 let nix_escape s = Re.replace (Re.compile (Re.alt [Re.char '\\'; Re.char '"'; Re.str "${"; Re.str "\n"])) ~f:(fun g -> "\\" ^ (fun c -> if c = "\n" then "n" else c) (Re.Group.get g 0)) s
 let shell_escape s = "'" ^ Re.replace (Re.compile (Re.char '\'')) ~f:(fun _ -> "'\\''") s ^ "'"
@@ -353,6 +356,8 @@ let rec pp_nix_expr_prec prec ppf nb =
       pp_nix_expr_prec `PElse ppf ebranch;
       fprintf ppf "@,@]@,@]";
       if paren then pp_print_text ppf ")" else ()
+  | `NPath p ->
+      fprintf ppf "%s" p
 and pp_nix_str ppf pieces = pieces |> List.iter
   (fun piece -> let open Format in
      match piece with

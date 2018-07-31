@@ -101,6 +101,7 @@ type nix_pkg = {
   conflicts: nix_dep OpamPackage.Name.Map.t;
   build: nix_expr;
   src: nix_expr;
+  extra_src: (OpamTypes.basename * nix_expr) list;
 }
 
 exception Unsupported of string
@@ -415,6 +416,12 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "src = ";
   pp_nix_expr ppf nix_pkg.src;
+  (match List.map (fun (name,src) -> nix_str_append (nix_str "ln -sv ") (nix_str_append src (nix_str @@ " " ^ OpamFilename.Base.to_string name))) nix_pkg.extra_src with
+  | [] -> ()
+  | x::xs ->
+      fprintf ppf ";@ ";
+      fprintf ppf "postUnpack = ";
+      pp_nix_expr ppf @@ List.fold_left (fun x y -> nix_str_append x @@ nix_str_append (nix_str "\n") y) x xs);
   fprintf ppf ";@ ";
   fprintf ppf "buildInputs = ";
   pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ OpamPackage.Name.to_string p) (OpamPackage.Name.Map.keys nix_pkg.deps));
@@ -629,7 +636,6 @@ let nix_of_opam ?name ?version opam =
   (* TODO handle patches *)
   (* TODO handle build_env *)
   (* TODO handle features *)
-  (* TODO handle extra_sources *)
   (* TODO handle messages *)
   (* TODO handle post_messages *)
   (* TODO handle depexts *)
@@ -646,10 +652,12 @@ let nix_of_opam ?name ?version opam =
   (* TODO handle doc *)
   (* TODO handle bug_reports *)
   (* TODO handle extensions *)
-  let (src, _extra_files) = nix_src_of_opam name version opam in
+  let (src, extra_src) = nix_src_of_opam name version opam in
+  let extra_files = match opam.extra_files with | None -> [] | Some xs -> xs in
+  let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; deps; conflicts; build; src }
+  { pname = name; version; deps; conflicts; build; src; extra_src }
 
 (* NIXIFY *)
 let nixify_doc = "Generates nix expressions from $(i,opam) files."

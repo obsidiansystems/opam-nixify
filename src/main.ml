@@ -102,6 +102,7 @@ type nix_pkg = {
   conflicts: nix_dep OpamPackage.Name.Map.t;
   build: nix_expr;
   install: nix_expr;
+  patches: nix_expr;
   src: nix_expr;
   extra_src: (OpamTypes.basename * nix_expr) list;
 }
@@ -449,6 +450,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
+  fprintf ppf "patches = (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
+  pp_nix_expr ppf nix_pkg.patches;
+  fprintf ppf ";@ ";
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
   pp_nix_expr ppf nix_pkg.build;
   fprintf ppf ";@ ";
@@ -457,7 +461,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "installPhase = \"runHook preInstall; mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
   fprintf ppf ";@ ";
-  fprintf ppf "createFindLibDestdir = true";
+  fprintf ppf "createFindlibDestdir = true";
   fprintf ppf ";@ ";
   fprintf ppf "@]@ }";
   fprintf ppf "@.";
@@ -534,6 +538,14 @@ let nix_optionals_opt b l = match b with
   | `NTrue -> Some l
   | `NFalse -> None
   | cond -> Some (`NAp (`NAp (`NAttr (`NAttr (`NVar "stdenv", "lib"), "optionals"), cond), l))
+
+let nix_expr_of_patch p = nix_list [nix_str @@ OpamFilename.Base.to_string p]
+
+let nix_expr_of_patches args = `NList (
+  args |> OpamStd.List.filter_map (fun (arg, flt) ->
+    nix_optionals_opt
+      (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
+      (nix_expr_of_patch arg)))
 
 let nix_expr_of_args args = `NList (
   args |> OpamStd.List.filter_map (fun (arg, flt) ->
@@ -659,7 +671,7 @@ let nix_of_opam ?name ?version opam =
   let install = nix_expr_of_commands opam.install in
   (* TODO handle remove *)
   (* TODO handle substs *)
-  (* TODO handle patches *)
+  let patches = nix_expr_of_patches opam.patches in
   (* TODO handle build_env *)
   (* TODO handle features *)
   (* TODO handle messages *)
@@ -683,7 +695,7 @@ let nix_of_opam ?name ?version opam =
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; deps; prop_deps = deps; conflicts; build; install; src; extra_src }
+  { pname = name; version; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src }
 
 (* NIXIFY *)
 let nixify_doc = "Generates nix expressions from $(i,opam) files."

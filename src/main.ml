@@ -100,6 +100,7 @@ type nix_pkg = {
   deps: nix_dep OpamPackage.Name.Map.t;
   conflicts: nix_dep OpamPackage.Name.Map.t;
   build: nix_expr;
+  install: nix_expr;
   src: nix_expr;
   extra_src: (OpamTypes.basename * nix_expr) list;
 }
@@ -445,7 +446,10 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
   pp_nix_expr ppf nix_pkg.build;
   fprintf ppf ";@ ";
-  fprintf ppf "installPhase = \"mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
+  fprintf ppf "preInstall = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
+  pp_nix_expr ppf nix_pkg.install;
+  fprintf ppf ";@ ";
+  fprintf ppf "installPhase = \"runHook preInstall; mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
   fprintf ppf ";@ ";
   fprintf ppf "createFindLibDestdir = true";
   fprintf ppf ";@ ";
@@ -646,7 +650,7 @@ let nix_of_opam ?name ?version opam =
   (* TODO handle env *)
   let build = nix_expr_of_commands opam.build in
   (* TODO handle run_test *)
-  (* TODO handle install *)
+  let install = nix_expr_of_commands opam.install in
   (* TODO handle remove *)
   (* TODO handle substs *)
   (* TODO handle patches *)
@@ -673,7 +677,7 @@ let nix_of_opam ?name ?version opam =
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; deps; conflicts; build; src; extra_src }
+  { pname = name; version; deps; conflicts; build; install; src; extra_src }
 
 (* NIXIFY *)
 let nixify_doc = "Generates nix expressions from $(i,opam) files."

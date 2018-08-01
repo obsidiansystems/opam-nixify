@@ -182,7 +182,12 @@ let nix_path s = match String.index_opt s '/' with
 let nix_escape s = Re.replace (Re.compile (Re.alt [Re.char '\\'; Re.char '"'; Re.str "${"; Re.str "\n"])) ~f:(fun g -> "\\" ^ (fun c -> if c = "\n" then "n" else c) (Re.Group.get g 0)) s
 let shell_escape s = "'" ^ Re.replace (Re.compile (Re.char '\'')) ~f:(fun _ -> "'\\''") s ^ "'"
 
-let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (OpamPackage.Name.to_string pkg))
+let argname_of_pkgname p =
+  match OpamPackage.Name.to_string p with
+  | "ocamlfind" -> "findlib"
+  | n -> n
+
+let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (argname_of_pkgname pkg))
 let nix_ver_of_filter flt = `NStr flt
 
 let rec resolve_ident = function
@@ -190,7 +195,7 @@ let rec resolve_ident = function
   | [],"name" -> nix_var "pname"
   | [],"jobs" -> nix_str "1"
   | [],"make" -> nix_str "make"
-  | [],"lib" -> nix_str "$out/lib"
+  | [],"lib" -> nix_str "$OCAMLFIND_DESTDIR"
   | [],"bin" -> nix_str "$out/bin"
   | [],"man" -> nix_str "$out/man"
   | [],"prefix" -> nix_str "$out"
@@ -370,6 +375,21 @@ and pp_nix_str ppf pieces = pieces |> List.iter
 
 let pp_nix_expr = pp_nix_expr_prec `PElse
 
+let nix_arg name deflt = `NArg (name, deflt)
+
+let arg_of_dep (p, {is_required; _}) =
+  nix_arg (argname_of_pkgname p) @@ if is_required then None else Some nix_null
+
+let pp_nix_arg ppf = function
+  | `NArg (name, None) -> Format.fprintf ppf "%s" name
+  | `NArg (name, Some x) -> Format.fprintf ppf "%s ? %a" name pp_nix_expr x
+
+let pp_nix_args ppf args =
+  let open Format in
+  fprintf ppf "@[{@ @[";
+  pp_print_list ~pp_sep:(fun ppf _ -> fprintf ppf ",@ ") pp_nix_arg ppf args;
+  fprintf ppf "@ @]}:@]"
+
 let pp_nix_pkg ?opam ppf nix_pkg =
   let open Format in
   (match opam with
@@ -378,16 +398,10 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       fprintf ppf "/*@[";
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
-  fprintf ppf "@[{@ @[";
-  let pp_arg ppf (name, d) =
-    pp_print_text ppf (OpamPackage.Name.to_string name) ;
-    if not d.is_required then pp_print_text ppf " ? null" else ()
-  in
-  pp_print_list ~pp_sep:(fun ppf _ -> fprintf ppf ",@ ") pp_arg ppf ([OpamPackage.Name.of_string "stdenv", {is_required = true; filtered_constraints = []}; OpamPackage.Name.of_string "opam", {is_required = true; filtered_constraints = []}; OpamPackage.Name.of_string "fetchurl", {is_required = true; filtered_constraints = []}] @ OpamPackage.Name.Map.bindings nix_pkg.deps) ;
-  fprintf ppf "@ @]}:@]";
+  pp_nix_args ppf ([nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (OpamPackage.Name.Map.bindings nix_pkg.deps)) ;
   nix_pkg.deps |> OpamPackage.Name.Map.iter (fun name { is_required; filtered_constraints } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
-      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if is_required then nix_true else nix_neq (nix_var @@ OpamPackage.Name.to_string name) nix_null) filters in
+      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if is_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
       let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
       let asserted = nix_impl guard cond in
       match asserted with
@@ -424,7 +438,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       pp_nix_expr ppf @@ List.fold_left (fun x y -> nix_str_append x @@ nix_str_append (nix_str "\n") y) x xs);
   fprintf ppf ";@ ";
   fprintf ppf "buildInputs = ";
-  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ OpamPackage.Name.to_string p) (OpamPackage.Name.Map.keys nix_pkg.deps));
+  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (OpamPackage.Name.Map.keys nix_pkg.deps));
+  fprintf ppf ";@ ";
+  fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
   pp_nix_expr ppf nix_pkg.build;
@@ -620,7 +636,7 @@ let nix_of_opam ?name ?version opam =
   let version = match version with
   | Some x -> x
   | None -> OpamFile.OPAM.version opam in
-  let deps = nixdeps_of_depends opam.depends in
+  let deps = nixdeps_of_depends (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
   let depopts = nixdeps_of_depopts opam.depopts in
   let deps = union_of_nixdeps deps depopts in
   let conflicts = nixdeps_of_depopts opam.conflicts in

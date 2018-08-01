@@ -199,6 +199,7 @@ let rec resolve_ident = function
   | [],"lib" -> nix_str "$OCAMLFIND_DESTDIR"
   | [],"bin" -> nix_str "$out/bin"
   | [],"man" -> nix_str "$out/man"
+  | [],"doc" -> nix_str "$out/share/doc"
   | [],"prefix" -> nix_str "$out"
   | [],"pinned" -> nix_false
   | [],"build" -> nix_true

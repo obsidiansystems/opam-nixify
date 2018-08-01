@@ -243,9 +243,9 @@ let nix_bool_of_constraint pkg (relop, ver) =
   | `Eq -> nix_eq pkg_ver chk_ver
   | `Neq -> nix_neq pkg_ver chk_ver
   | `Geq -> nix_ver_cmp "versionAtLeast" pkg_ver chk_ver
-  | `Gt -> nix_ver_cmp "version_older" chk_ver pkg_ver
+  | `Gt -> nix_ver_cmp "versionOlder" chk_ver pkg_ver
   | `Leq -> nix_ver_cmp "versionAtLeast" chk_ver pkg_ver
-  | `Lt -> nix_ver_cmp "version_older" pkg_ver chk_ver
+  | `Lt -> nix_ver_cmp "versionOlder" pkg_ver chk_ver
 
 let rec pp_nix_expr_prec prec ppf nb =
   let open Format in

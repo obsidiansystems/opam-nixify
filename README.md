@@ -1,4 +1,32 @@
-## Hacking
+Opam-Nixify
+===========
+
+
+Build
+-----
+
+Install with `opam`:
+
+    opam pin add opam-nixify . -kgit
+
+Or just run
+
+    make
+
+which builds `_build/install/default/bin/opam-nixify`
+
+Code Formatting
+---------------
+
+Using the dev version of `ocamlformat`
+
+     opam pin add ocamlformat --dev
+
+then `make fmt`.
+
+
+Tezos Hacking
+-------------
 
 First run `./build-with-opam.sh` if you haven't already.
 
@@ -25,7 +53,8 @@ eval $(opam env)
 When you want to regenerate the nix derivations for opam dependencies run
 
 ```
-(cd src; jbuilder build @install) && (for i in tezos/_opam/.opam-switch/packages/[^no]* tezos/_opam/.opam-switch/packages/n[^o]* tezos/_opam/.opam-switch/packages/o[^c]* tezos/_opam/.opam-switch/packages/oc[^a]* tezos/_opam/.opam-switch/packages/ocaml[^-.]* tezos/_opam/.opam-switch/packages/ocaml-[^b]*; do j=nix/ocaml/"$(basename "${i%%.*([^/])}")"; mkdir -p "$j" && src/_build/install/default/bin/opam-nixify "$i" >"$j"/default.nix && (shopt -s nullglob; for k in "$i"/files/*; do cp -at "$j" "$k"; done); done)`
+make && (for i in tezos/_opam/.opam-switch/packages/[^no]* tezos/_opam/.opam-switch/packages/n[^o]* tezos/_opam/.opam-switch/packages/o[^c]* tezos/_opam/.opam-switch/packages/oc[^a]* tezos/_opam/.opam-switch/packages/ocaml[^-.]* tezos/_opam/.opam-switch/packages/ocaml-[^b]*; do j=nix/ocaml/"$(basename "${i%%.*([^/])}")"; mkdir -p "$j" && _build/install/default/bin/opam-nixify "$i" >"$j"/default.nix && (shopt -s nullglob; for k in "$i"/files/*; do cp -at "$j" "$k"; done); done)`
+```
 
 
 To build tezos (or some other package in `ocamlworld.nix`) use:

@@ -98,6 +98,7 @@ type nix_pkg = {
   pname: OpamPackage.Name.t;
   version: OpamPackage.Version.t;
   deps: nix_dep OpamPackage.Name.Map.t;
+  prop_deps: nix_dep OpamPackage.Name.Map.t;
   conflicts: nix_dep OpamPackage.Name.Map.t;
   build: nix_expr;
   install: nix_expr;
@@ -443,6 +444,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf "buildInputs = ";
   pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (OpamPackage.Name.Map.keys nix_pkg.deps));
   fprintf ppf ";@ ";
+  fprintf ppf "propagatedBuildInputs = ";
+  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (OpamPackage.Name.Map.keys nix_pkg.prop_deps));
+  fprintf ppf ";@ ";
   fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
@@ -679,7 +683,7 @@ let nix_of_opam ?name ?version opam =
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; deps; conflicts; build; install; src; extra_src }
+  { pname = name; version; deps; prop_deps = deps; conflicts; build; install; src; extra_src }
 
 (* NIXIFY *)
 let nixify_doc = "Generates nix expressions from $(i,opam) files."

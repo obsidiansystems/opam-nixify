@@ -222,6 +222,7 @@ let rec nix_bool_of_filter flt = match flt with
   | FOp (l,`Eq,r) -> nix_eq (nix_bool_of_filter l) (nix_bool_of_filter r)
   | FOp (l,`Neq,r) -> nix_neq (nix_bool_of_filter l) (nix_bool_of_filter r)
   | FString s -> nix_str s
+  | FNot x -> nix_not (nix_bool_of_filter x)
   | f -> raise @@ Wat (OpamFilter.to_string f)
 
 let nix_bool_of_formula nix_bool_of_atom =

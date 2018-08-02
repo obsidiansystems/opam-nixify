@@ -1,0 +1,23 @@
+opam-version: "1.2"
+version: "0.0.0-dev"
+maintainer: "contact@obsidian.systems"
+authors: [
+  "James Deikun <james.deikun@obsidian.systems>"
+  "Elliot Cameron <eacameron@gmail.com>"
+  "Seb Mondet <seb@mondet.org>"
+]
+homepage: "https://github.com/obsidiansystems/opam-nixify"
+bug-reports: "https://github.com/obsidiansystems/opam-nixify/issues"
+dev-repo: "https://github.com/obsidiansystems/opam-nixify.git"
+build: [
+  ["jbuilder" "build" "-p" "opam-nixify" "-j" jobs ]
+]
+depends: [
+  "opam-state" {= "2.0.0~rc3"}
+  "opam-solver" {= "2.0.0~rc3"}
+  "opam-client" {= "2.0.0~rc3"}
+  "re" {>= "1.7.2"}
+  "cmdliner" {>= "0.9.8"}
+  "jbuilder" {build & >= "1.0+beta20"}
+]
+available: ocaml-version >= "4.02.3"

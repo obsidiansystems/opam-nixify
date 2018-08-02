@@ -1,18 +1,9 @@
 (jbuild_version 1)
 
-(library
-  ((name opam_nixify)
-   (public_name opam-nixify)
-   (synopsis "OCaml Package Manager client and CLI library")
-   (modules (:standard \ main))
-   (libraries (opam-client opam-state opam-solver re cmdliner))
-   (flags (:standard))
-   (wrapped false)))
-
 (executable
   ((name main)
    (public_name opam-nixify)
    (package opam-nixify)
    (modules (main))
    (flags (:standard))
-   (libraries (opam-nixify))))
+   (libraries (opam-client opam-state opam-solver re cmdliner))))

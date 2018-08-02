@@ -4,7 +4,7 @@ maintainer: "contact@obsidian.systems"
 authors: [
   "James Deikun <james.deikun@obsidian.systems>"
   "Elliot Cameron <eacameron@gmail.com>"
-  "Seb Mondet <seb@mondet.org"
+  "Seb Mondet <seb@mondet.org>"
 ]
 homepage: "https://github.com/obsidiansystems/opam-nixify"
 bug-reports: "https://github.com/obsidiansystems/opam-nixify/issues"

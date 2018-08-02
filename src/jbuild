@@ -1,13 +1,5 @@
 (jbuild_version 1)
 
-;;(library
-;;  ((name opam_nixify)
-;;   (public_name opam-nixify)
-;;   (synopsis "OCaml Package Manager client and CLI library")
-;;   (modules (:standard \ main))
-;;   (flags (:standard))
-;;   (wrapped false)))
-
 (executable
   ((name main)
    (public_name opam-nixify)

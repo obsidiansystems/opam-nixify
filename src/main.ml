@@ -403,7 +403,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       fprintf ppf "/*@[";
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
-  pp_nix_args ppf ([nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (OpamPackage.Name.Map.bindings nix_pkg.deps)) ;
+  pp_nix_args ppf ([nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (OpamPackage.Name.Map.bindings nix_pkg.deps)) ;
   nix_pkg.deps |> OpamPackage.Name.Map.iter (fun name { is_required; filtered_constraints } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
       let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if is_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
@@ -431,7 +431,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "name = \"${pname}-${version}\"";
   fprintf ppf ";@ ";
-  fprintf ppf "doCheck = false";
+  fprintf ppf "inherit doCheck";
   fprintf ppf ";@ ";
   fprintf ppf "src = ";
   pp_nix_expr ppf nix_pkg.src;

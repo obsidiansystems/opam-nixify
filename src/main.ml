@@ -91,7 +91,7 @@ type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_b
 type nix_bool = [`NTrue | `NFalse | vnix_bool]
 *)
 
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr)]
 type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 
 type nix_pkg = {
@@ -182,6 +182,25 @@ let nix_str_append l r = match nix_stringify l, nix_stringify r with
 let nix_path s = match String.index_opt s '/' with
   | None -> `NPath ("./" ^ s)
   | Some _ -> `NPath s
+let nix_ap f x = `NAp (f,x)
+let nix_attr x a = `NAttr (x,a)
+let nix_stdlib = nix_attr @@ nix_attr (nix_var "stdenv") "lib"
+let nix_stdcall f = nix_ap @@ nix_stdlib f
+let nix_stdcall2 f x = nix_ap @@ nix_stdcall f x
+let rec nix_append_lists = function
+  | `NList x as nx -> (function
+    | `NList y -> nix_list (x @ y)
+    | `NAppend (`NList y,z) -> `NAppend (nix_list (x @ y), z)
+    | y -> `NAppend (nx, y))
+  | `NAppend (x,y) -> fun z -> `NAppend (x, nix_append_lists y z)
+  | x -> fun y -> `NAppend (x,y)
+let rec nix_concat_lists_ = function
+  | l :: ls -> nix_append_lists l (nix_concat_lists_ ls)
+  | [] -> nix_list []
+let rec nix_concat_lists = function
+  | `NList ls -> nix_concat_lists_ ls
+  | `NAppend (x,y) -> nix_append_lists (nix_concat_lists x) (nix_concat_lists y)
+  | x -> nix_stdcall "concatLists" x
 
 let nix_escape s = Re.replace (Re.compile (Re.alt [Re.char '\\'; Re.char '"'; Re.str "${"; Re.str "\n"])) ~f:(fun g -> "\\" ^ (fun c -> if c = "\n" then "n" else c) (Re.Group.get g 0)) s
 let shell_escape s = "'" ^ Re.replace (Re.compile (Re.char '\'')) ~f:(fun _ -> "'\\''") s ^ "'"
@@ -302,7 +321,7 @@ let rec pp_nix_expr_prec prec ppf nb =
   | `NNull -> pp_print_text ppf "null"
   | `NAp (f, x) ->
       let paren = match prec with
-        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAppend -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -332,13 +351,23 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NAttr (l,a) ->
       let paren = match prec with
-        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAp | `PAttr -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAppend | `PAp | `PAttr -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
       pp_nix_expr_prec `PAttr ppf l;
       pp_print_text ppf ".";
       pp_print_text ppf a;
+      if paren then pp_print_text ppf ")" else ()
+  | `NAppend (x,y) ->
+      let paren = match prec with
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAppend -> false
+        | _ -> true
+      in
+      if paren then pp_print_text ppf "(" else ();
+      pp_nix_expr_prec `PAppend ppf x;
+      pp_print_text ppf " ++ ";
+      pp_nix_expr_prec `PAppend ppf y;
       if paren then pp_print_text ppf ")" else ()
   | `NStr s ->
       fprintf ppf "@[<h>\"%s\"@]" @@ nix_escape s
@@ -451,13 +480,17 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf ";@ ";
   fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
-  fprintf ppf "patches = (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
-  pp_nix_expr ppf nix_pkg.patches;
-  fprintf ppf ";@ ";
-  fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
+  (match nix_pkg.patches with
+  | `NList [] -> ()
+  | _ ->
+    fprintf ppf "patches = ";
+    pp_nix_expr ppf nix_pkg.patches;
+    fprintf ppf ";@ "
+  );
+  fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (stdenv.lib.concatStringsSep \" \")@ ";
   pp_nix_expr ppf nix_pkg.build;
   fprintf ppf ";@ ";
-  fprintf ppf "preInstall = stdenv.lib.concatMapStringsSep \"\\n\" (x: stdenv.lib.concatStringsSep \" \" (stdenv.lib.concatLists x))@ ";
+  fprintf ppf "preInstall = stdenv.lib.concatMapStringsSep \"\\n\" (stdenv.lib.concatStringsSep \" \")@ ";
   pp_nix_expr ppf nix_pkg.install;
   fprintf ppf ";@ ";
   fprintf ppf "installPhase = \"runHook preInstall; mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
@@ -538,7 +571,10 @@ let nix_expr_of_arg = function
 let nix_optionals_opt b l = match b with
   | `NTrue -> Some l
   | `NFalse -> None
-  | cond -> Some (`NAp (`NAp (`NAttr (`NAttr (`NVar "stdenv", "lib"), "optionals"), cond), l))
+  | cond -> match l with
+    | `NList [] -> None
+    | `NList (x::[]) -> Some (nix_stdcall2 "optional" cond x)
+    | _ -> Some (nix_stdcall2 "optionals" cond l)
 
 let nix_expr_of_patch p = nix_list [nix_str @@ OpamFilename.Base.to_string p]
 
@@ -547,12 +583,14 @@ let nix_expr_of_patches args = `NList (
     nix_optionals_opt
       (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
       (nix_expr_of_patch arg)))
+    |> nix_concat_lists
 
 let nix_expr_of_args args = `NList (
   args |> OpamStd.List.filter_map (fun (arg, flt) ->
     nix_optionals_opt
       (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
       (nix_expr_of_arg arg)))
+    |> nix_concat_lists
 
 let nix_expr_of_commands cmds = `NList (
   cmds |> OpamStd.List.filter_map (fun (args, flt) ->
@@ -584,7 +622,8 @@ let nixdeps_of_depexts depexts =
       (nix_list @@ List.map nix_str pkgs)
     |> function
       | None -> []
-      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> OpamPackage.Name.Map.singleton (OpamPackage.Name.of_string name) { is_required = true; filtered_constraints = [] })
+      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> OpamPackage.Name.Map.singleton (OpamPackage.Name.of_string name) { is_required = true; filtered_constraints = [] }
+                                                     | _ -> raise @@ Wat "depext constraint too complex")
       | Some _ -> raise @@ Wat "depext constraint too complex")
   |> List.concat
   |> OpamPackage.Name.Map.(List.fold_left (union (fun x _ -> x)) empty)

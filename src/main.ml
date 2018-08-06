@@ -73,6 +73,7 @@ let run command =
 
 type nix_dep = {
   is_required : bool ;
+  ever_required : bool ;
   filtered_constraints : (OpamTypes.filter list * (relop * string) OpamFormula.formula) list ;
 }
 
@@ -212,6 +213,13 @@ let argname_of_pkgname p =
 
 let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (argname_of_pkgname pkg))
 let nix_ver_of_filter flt = `NStr flt
+
+let rec optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
+  | Global,"build" -> Some (B true)
+  | Global,"os" -> Some (S "linux")
+  | Global,"os-distribution" -> Some (S "nixos")
+  | Global,"with-doc" -> Some (B true)
+  | _,_ -> None
 
 let rec resolve_ident = function
   | (_::_::_) as ps,v -> List.fold_left nix_and nix_true @@ List.map (fun p -> resolve_ident ([p], v)) ps
@@ -434,9 +442,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
   pp_nix_args ppf ((if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (OpamPackage.Name.Map.bindings nix_pkg.deps)) ;
-  nix_pkg.deps |> OpamPackage.Name.Map.iter (fun name { is_required; filtered_constraints } ->
+  nix_pkg.deps |> OpamPackage.Name.Map.iter (fun name { ever_required; filtered_constraints; _ } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
-      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if is_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
+      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if ever_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
       let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
       let asserted = nix_impl guard cond in
       match asserted with
@@ -527,7 +535,19 @@ let nixdep_of_filtered_constraints fc =
   | Atom (Constraint (_relop, FUndef _)) -> raise Waat
   in
   let filtered_constraints = [go fc] in
-  { is_required = true; filtered_constraints }
+  let optionality_fc = OpamFormula.partial_eval (function
+    | Filter f -> (match OpamFilter.partial_eval optionality_env f with
+      | FBool true -> `True
+      | FBool false -> `False
+      | r -> `Formula (Atom (Filter r)))
+    | Constraint (_,_) -> `True) fc in
+  let is_required = match optionality_fc with
+  | `True -> true
+  | `False -> false
+  | `Formula Empty -> true
+  | `Formula f -> false
+  in
+  { is_required; ever_required = (optionality_fc <> `False); filtered_constraints }
 
 exception Unclosed_variable_replacement of string
 
@@ -613,7 +633,7 @@ let rec nixdeps_of_depopts depopts = match depopts with
   | Block _ -> raise Waat
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
   | Or (l, r) -> OpamPackage.Name.Map.union (fun x _ -> x) (nixdeps_of_depopts l) (nixdeps_of_depopts r)
-  | Atom (name, cs) -> OpamPackage.Name.Map.singleton name @@ { (nixdep_of_filtered_constraints cs) with is_required = false }
+  | Atom (name, cs) -> OpamPackage.Name.Map.singleton name @@ { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
 
 let nixdeps_of_depexts depexts =
   depexts |> List.map (fun (pkgs, flt) ->
@@ -622,7 +642,7 @@ let nixdeps_of_depexts depexts =
       (nix_list @@ List.map nix_str pkgs)
     |> function
       | None -> []
-      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> OpamPackage.Name.Map.singleton (OpamPackage.Name.of_string name) { is_required = true; filtered_constraints = [] }
+      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> OpamPackage.Name.Map.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = [] }
                                                      | _ -> raise @@ Wat "depext constraint too complex")
       | Some _ -> raise @@ Wat "depext constraint too complex")
   |> List.concat
@@ -704,7 +724,7 @@ let nix_src_of_opam name version opam =
 let union_of_nixdeps =
   OpamPackage.Name.Map.union
     (fun d1 d2 ->
-      { is_required = d1.is_required || d2.is_required ; filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints })
+      { is_required = d1.is_required || d2.is_required ; ever_required = d1.ever_required || d2.ever_required ; filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints })
 
 let nix_of_opam ?name ?version opam =
   let name = match name with

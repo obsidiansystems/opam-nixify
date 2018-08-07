@@ -77,6 +77,33 @@ type nix_dep = {
   filtered_constraints : (OpamTypes.filter list * (relop * string) OpamFormula.formula) list ;
 }
 
+module NixDeps = struct
+  open OpamPackage
+
+  type t = {
+    ordering : Name.t list ;
+    details : nix_dep Name.Map.t ;
+  }
+
+  let bindings { ordering ; details } = ordering |> List.map (fun p -> (p, Name.Map.find p details))
+  let empty = { ordering = [] ; details = Name.Map.empty }
+  let iter f { ordering ; details } = ordering |> List.iter (fun p -> f p @@ Name.Map.find p details)
+  let keys { ordering ; _ } = ordering
+  let mem k { details ; _ } = Name.Map.mem k details
+  let singleton p v = { ordering = [p] ; details = Name.Map.singleton p v }
+  let union x y = {
+    ordering = x.ordering @ List.filter (fun p -> not (Name.Map.mem p x.details)) y.ordering ;
+    details = OpamPackage.Name.Map.union
+      (fun d1 d2 ->
+        { is_required = d1.is_required || d2.is_required ;
+          ever_required = d1.ever_required || d2.ever_required ;
+          filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints })
+      x.details
+      y.details
+  }
+
+end
+
 (*
 module NixTypes = struct
   type 'x any = [`NAp of ('x * 'x) | `NVar of string | `NAttr of ('x * string)]
@@ -98,9 +125,9 @@ type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 type nix_pkg = {
   pname: OpamPackage.Name.t;
   version: OpamPackage.Version.t;
-  deps: nix_dep OpamPackage.Name.Map.t;
-  prop_deps: nix_dep OpamPackage.Name.Map.t;
-  conflicts: nix_dep OpamPackage.Name.Map.t;
+  deps: NixDeps.t;
+  prop_deps: NixDeps.t;
+  conflicts: NixDeps.t;
   build: nix_expr;
   install: nix_expr;
   patches: nix_expr;
@@ -441,8 +468,8 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       fprintf ppf "/*@[";
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
-  pp_nix_args ppf ((if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (OpamPackage.Name.Map.bindings nix_pkg.deps)) ;
-  nix_pkg.deps |> OpamPackage.Name.Map.iter (fun name { ever_required; filtered_constraints; _ } ->
+  pp_nix_args ppf ((if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
+  nix_pkg.deps |> NixDeps.iter (fun name { ever_required; filtered_constraints; _ } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
       let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if ever_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
       let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
@@ -450,8 +477,8 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       match asserted with
       | `NTrue -> ()
       | _ -> fprintf ppf "@;assert %a;" pp_nix_expr asserted));
-  nix_pkg.conflicts |> OpamPackage.Name.Map.iter (fun name { filtered_constraints; _ } ->
-    if OpamPackage.Name.Map.mem name nix_pkg.deps then
+  nix_pkg.conflicts |> NixDeps.iter (fun name { filtered_constraints; _ } ->
+    if NixDeps.mem name nix_pkg.deps then
       filtered_constraints |> List.iter (fun (filters, constraints) ->
         let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) `NTrue filters in
         let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
@@ -481,10 +508,10 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       pp_nix_expr ppf @@ List.fold_left (fun x y -> nix_str_append x @@ nix_str_append (nix_str "\n") y) x xs);
   fprintf ppf ";@ ";
   fprintf ppf "buildInputs = ";
-  pp_nix_expr ppf @@ nix_list ((if nix_pkg.uses_zip then [nix_var "unzip"] else []) @ List.map (fun p -> nix_var @@ argname_of_pkgname p) (OpamPackage.Name.Map.keys nix_pkg.deps));
+  pp_nix_expr ppf @@ nix_list ((if nix_pkg.uses_zip then [nix_var "unzip"] else []) @ List.map (fun p -> nix_var @@ argname_of_pkgname p) (NixDeps.keys nix_pkg.deps));
   fprintf ppf ";@ ";
   fprintf ppf "propagatedBuildInputs = ";
-  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (OpamPackage.Name.Map.keys nix_pkg.prop_deps));
+  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (NixDeps.keys nix_pkg.prop_deps));
   fprintf ppf ";@ ";
   fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
@@ -619,21 +646,20 @@ let nix_expr_of_commands cmds = `NList (
       (nix_expr_of_args args)))
 
 let rec nixdeps_of_depends depends = match depends with
-  | Empty -> OpamPackage.Name.Map.empty
+  | Empty -> NixDeps.empty
   | Block _ -> raise Waat
-  | And (l, r) -> OpamPackage.Name.Map.union
-    (fun x y -> { x with filtered_constraints = x.filtered_constraints @ y.filtered_constraints })
+  | And (l, r) -> NixDeps.union
     (nixdeps_of_depends l)
     (nixdeps_of_depends r)
   | Or (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " OROROR " ^ OpamFilter.string_of_filtered_formula r)
-  | Atom (name, cs) -> OpamPackage.Name.Map.singleton name @@ nixdep_of_filtered_constraints cs
+  | Atom (name, cs) -> NixDeps.singleton name @@ nixdep_of_filtered_constraints cs
 
 let rec nixdeps_of_depopts depopts = match depopts with
-  | Empty -> OpamPackage.Name.Map.empty
+  | Empty -> NixDeps.empty
   | Block _ -> raise Waat
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
-  | Or (l, r) -> OpamPackage.Name.Map.union (fun x _ -> x) (nixdeps_of_depopts l) (nixdeps_of_depopts r)
-  | Atom (name, cs) -> OpamPackage.Name.Map.singleton name @@ { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
+  | Or (l, r) -> NixDeps.union (nixdeps_of_depopts l) (nixdeps_of_depopts r)
+  | Atom (name, cs) -> NixDeps.singleton name @@ { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
 
 let nixdeps_of_depexts depexts =
   depexts |> List.map (fun (pkgs, flt) ->
@@ -642,11 +668,11 @@ let nixdeps_of_depexts depexts =
       (nix_list @@ List.map nix_str pkgs)
     |> function
       | None -> []
-      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> OpamPackage.Name.Map.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = [] }
+      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = [] }
                                                      | _ -> raise @@ Wat "depext constraint too complex")
       | Some _ -> raise @@ Wat "depext constraint too complex")
   |> List.concat
-  |> OpamPackage.Name.Map.(List.fold_left (union (fun x _ -> x)) empty)
+  |> NixDeps.(List.fold_left union empty)
 
 (* TODO: this *)
 let active_caches _st _nv = []
@@ -721,11 +747,6 @@ let nix_src_of_opam name version opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let union_of_nixdeps =
-  OpamPackage.Name.Map.union
-    (fun d1 d2 ->
-      { is_required = d1.is_required || d2.is_required ; ever_required = d1.ever_required || d2.ever_required ; filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints })
-
 let nix_of_opam ?name ?version opam =
   let name = match name with
   | Some x -> x
@@ -735,7 +756,7 @@ let nix_of_opam ?name ?version opam =
   | None -> OpamFile.OPAM.version opam in
   let deps = nixdeps_of_depends (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
   let depopts = nixdeps_of_depopts opam.depopts in
-  let deps = union_of_nixdeps deps depopts in
+  let deps = NixDeps.union deps depopts in
   let conflicts = nixdeps_of_depopts opam.conflicts in
   (* TODO handle conflict_class *)
   (* TODO handle available *)
@@ -753,7 +774,7 @@ let nix_of_opam ?name ?version opam =
   (* TODO handle post_messages *)
   (* TODO handle depexts *)
   let depexts = nixdeps_of_depexts opam.depexts in
-  let deps = union_of_nixdeps deps depexts in
+  let deps = NixDeps.union deps depexts in
   (* TODO handle libraries *)
   (* TODO handle syntax *)
   (* TODO handle dev_repo *)

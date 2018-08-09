@@ -645,21 +645,25 @@ let nix_expr_of_commands cmds = `NList (
       (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
       (nix_expr_of_args args)))
 
-let rec nixdeps_of_depends depends = match depends with
+let nix_name ~refnames name =
+  OpamStd.Option.default name (OpamPackage.Name.Map.find_opt name refnames)
+
+let rec nixdeps_of_depends ~refnames depends = match depends with
   | Empty -> NixDeps.empty
   | Block _ -> raise Waat
   | And (l, r) -> NixDeps.union
-    (nixdeps_of_depends l)
-    (nixdeps_of_depends r)
+    (nixdeps_of_depends ~refnames l)
+    (nixdeps_of_depends ~refnames r)
   | Or (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " OROROR " ^ OpamFilter.string_of_filtered_formula r)
-  | Atom (name, cs) -> NixDeps.singleton name @@ nixdep_of_filtered_constraints cs
+  | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@ nixdep_of_filtered_constraints cs
 
-let rec nixdeps_of_depopts depopts = match depopts with
+let rec nixdeps_of_depopts ~refnames depopts = match depopts with
   | Empty -> NixDeps.empty
   | Block _ -> raise Waat
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
-  | Or (l, r) -> NixDeps.union (nixdeps_of_depopts l) (nixdeps_of_depopts r)
-  | Atom (name, cs) -> NixDeps.singleton name @@ { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
+  | Or (l, r) -> NixDeps.union (nixdeps_of_depopts ~refnames l) (nixdeps_of_depopts ~refnames r)
+  | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@
+    { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
 
 let nixdeps_of_depexts depexts =
   depexts |> List.map (fun (pkgs, flt) ->
@@ -747,17 +751,18 @@ let nix_src_of_opam name version opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let nix_of_opam ?name ?version opam =
+let nix_of_opam ?name ?version ~refnames ~patches opam =
   let name = match name with
   | Some x -> x
   | None -> OpamFile.OPAM.name opam in
   let version = match version with
   | Some x -> x
   | None -> OpamFile.OPAM.version opam in
-  let deps = nixdeps_of_depends (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
-  let depopts = nixdeps_of_depopts opam.depopts in
+  let _ref_name = nix_name ~refnames name in
+  let deps = nixdeps_of_depends ~refnames (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
+  let depopts = nixdeps_of_depopts ~refnames opam.depopts in
   let deps = NixDeps.union deps depopts in
-  let conflicts = nixdeps_of_depopts opam.conflicts in
+  let conflicts = nixdeps_of_depopts ~refnames opam.conflicts in
   (* TODO handle conflict_class *)
   (* TODO handle available *)
   (* TODO handle flags *)
@@ -767,7 +772,10 @@ let nix_of_opam ?name ?version opam =
   let install = nix_expr_of_commands opam.install in
   (* TODO handle remove *)
   (* TODO handle substs *)
-  let patches = nix_expr_of_patches opam.patches in
+  let extra_patches = OpamStd.Option.default [] @@
+    OpamPackage.Name.Map.find_opt name patches
+  in
+  let patches = nix_expr_of_patches (opam.patches @ extra_patches) in
   (* TODO handle build_env *)
   (* TODO handle features *)
   (* TODO handle messages *)
@@ -824,8 +832,25 @@ let nixify =
        an opam file directly."
       Arg.(some OpamArg.package) None
   in
-  let nixify global_options files package warnings_sel =
+  let refnames =
+    OpamArg.mk_opt_all ["refname";"r"] "OLDNAME:NEWNAME"
+      "Refer to the package $(i,OLDNAME) as $(i,NEWNAME).  This renaming will \
+       occur in the argument lists of all packages that make use of $(i,OLDNAME). \
+       It does not affect the name used as a variable when building $(i,OLDNAME) \
+       or in the derivation metadata for $(i,OLDNAME)."
+      Arg.(pair ~sep:':' OpamArg.package_name OpamArg.package_name)
+  in
+  let patches =
+    OpamArg.mk_opt_all ["patch";"p"] "NAME:PATCH"
+      "Apply an additional patch to $(i,NAME) after all the patches specified \
+       in the repository's metadata.  Ignored when processing packages other \
+       than $(i,NAME)."
+      Arg.(pair ~sep:':' OpamArg.package_name string)
+  in
+  let nixify global_options files package warnings_sel refnames patches =
     OpamArg.apply_global_options global_options;
+    let refnames = OpamPackage.Name.Map.of_list refnames in
+    let patches = OpamPackage.Name.Map.(List.fold_right (fun (pk,pt) -> update pk (List.cons (OpamFilename.Base.of_string pt, None)) []) patches empty) in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -905,7 +930,7 @@ let nixify =
             opam
               |> OpamStd.Option.map OpamFormatUpgrade.opam_file_from_1_2_to_2_0
               |> OpamStd.Option.iter (fun upgraded ->
-                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam upgraded);
+                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam ~refnames ~patches upgraded);
             err || failed
           with
           | Parsing.Parse_error
@@ -917,8 +942,8 @@ let nixify =
     in
     if err then OpamStd.Sys.exit_because `False
   in
-  Term.(const nixify $OpamArg.global_options $files $package $warnings),
-  OpamArg.term_info "nixify" ~doc ~man
+  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches),
+  OpamArg.term_info "opam-nixify" ~doc ~man
 
 let () =
   OpamStd.Sys.at_exit (fun () ->

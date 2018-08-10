@@ -456,12 +456,13 @@ let pp_nix_arg ppf = function
 
 let pp_nix_args ppf args =
   let open Format in
-  fprintf ppf "@[{@ @[";
+  fprintf ppf "@[<2>{@ ";
   pp_print_list ~pp_sep:(fun ppf _ -> fprintf ppf ",@ ") pp_nix_arg ppf args;
-  fprintf ppf "@ @]}:@]"
+  fprintf ppf "@ }:@]@ "
 
 let pp_nix_pkg ?opam ppf nix_pkg =
   let open Format in
+  fprintf ppf "@[<hv>";
   (match opam with
   | None -> ();
   | Some file ->
@@ -476,7 +477,7 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       let asserted = nix_impl guard cond in
       match asserted with
       | `NTrue -> ()
-      | _ -> fprintf ppf "@;assert %a;" pp_nix_expr asserted));
+      | _ -> fprintf ppf "@[<2>assert %a;@]@ " pp_nix_expr asserted));
   nix_pkg.conflicts |> NixDeps.iter (fun name { filtered_constraints; _ } ->
     if NixDeps.mem name nix_pkg.deps then
       filtered_constraints |> List.iter (fun (filters, constraints) ->
@@ -485,9 +486,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
         let asserted = nix_impl guard (nix_not cond) in
         match asserted with
         | `NTrue -> ()
-        | _ -> fprintf ppf "@;assert %a;" pp_nix_expr asserted)
+        | _ -> fprintf ppf "@[<2>assert %a;@]@ " pp_nix_expr asserted)
     else ());
-  fprintf ppf "@ stdenv.mkDerivation rec {@ @[@ ";
+  fprintf ppf "@ stdenv.mkDerivation rec {@;<1 2>@[<hv>";
   fprintf ppf "pname = ";
   pp_nix_expr ppf (nix_str (OpamPackage.Name.to_string nix_pkg.pname));
   fprintf ppf ";@ ";
@@ -531,8 +532,9 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf "installPhase = \"runHook preInstall; mkdir -p $out; for i in *.install; do ${opam.installer}/bin/opam-installer -i --prefix=$out --libdir=$OCAMLFIND_DESTDIR \\\"$i\\\"; done\"";
   fprintf ppf ";@ ";
   fprintf ppf "createFindlibDestdir = true";
-  fprintf ppf ";@ ";
+  fprintf ppf ";";
   fprintf ppf "@]@ }";
+  fprintf ppf "@]";
   fprintf ppf "@.";
   ()
 

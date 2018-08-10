@@ -75,6 +75,7 @@ type nix_dep = {
   is_required : bool ;
   ever_required : bool ;
   filtered_constraints : (OpamTypes.filter list * (relop * string) OpamFormula.formula) list ;
+  include_conditions : OpamTypes.filter ;
 }
 
 module NixDeps = struct
@@ -97,7 +98,8 @@ module NixDeps = struct
       (fun d1 d2 ->
         { is_required = d1.is_required || d2.is_required ;
           ever_required = d1.ever_required || d2.ever_required ;
-          filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints })
+          filtered_constraints = d1.filtered_constraints @ d2.filtered_constraints ;
+          include_conditions = FOr (d1.include_conditions,d2.include_conditions) })
       x.details
       y.details
   }
@@ -241,11 +243,15 @@ let argname_of_pkgname p =
 let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (argname_of_pkgname pkg))
 let nix_ver_of_filter flt = `NStr flt
 
-let rec optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
+let optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
   | Global,"build" -> Some (B true)
   | Global,"os" -> Some (S "linux")
   | Global,"os-distribution" -> Some (S "nixos")
   | Global,"with-doc" -> Some (B true)
+  | _,_ -> None
+
+let propagation_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
+  | Global,"build" -> Some (B false)
   | _,_ -> None
 
 let rec resolve_ident = function
@@ -295,6 +301,18 @@ let nix_bool_of_formula nix_bool_of_atom =
 
 let nix_ver_cmp op v1 v2 =
   `NAp (`NAp (`NAttr (`NAttr ((`NVar "stdenv"), "lib"), op), v1), v2)
+
+let nix_optionals_opt b l = match b with
+  | `NTrue -> Some l
+  | `NFalse -> None
+  | cond -> match l with
+    | `NList [] -> None
+    | `NList (x::[]) -> Some (nix_stdcall2 "optional" cond x)
+    | _ -> Some (nix_stdcall2 "optionals" cond l)
+
+let nix_optionals b l = match nix_optionals_opt b l with
+  | Some l -> l
+  | None -> nix_list []
 
 let nix_bool_of_constraint pkg (relop, ver) =
   let chk_ver = nix_ver_of_filter ver in
@@ -508,11 +526,27 @@ let pp_nix_pkg ?opam ppf nix_pkg =
       fprintf ppf "postUnpack = ";
       pp_nix_expr ppf @@ List.fold_left (fun x y -> nix_str_append x @@ nix_str_append (nix_str "\n") y) x xs);
   fprintf ppf ";@ ";
+  let buildInputs = NixDeps.bindings nix_pkg.deps
+    |> OpamStd.List.filter_map (fun (p, { include_conditions ; _ }) ->
+        nix_optionals_opt
+          (nix_bool_of_filter include_conditions)
+          (nix_list [nix_var @@ argname_of_pkgname p]))
+    |> nix_list
+    |> nix_concat_lists
+  in
   fprintf ppf "buildInputs = ";
-  pp_nix_expr ppf @@ nix_list ((if nix_pkg.uses_zip then [nix_var "unzip"] else []) @ List.map (fun p -> nix_var @@ argname_of_pkgname p) (NixDeps.keys nix_pkg.deps));
+  pp_nix_expr ppf @@ nix_append_lists (nix_list @@ if nix_pkg.uses_zip then [nix_var "unzip"] else []) buildInputs;
   fprintf ppf ";@ ";
+  let propagatedBuildInputs = NixDeps.bindings nix_pkg.prop_deps
+    |> OpamStd.List.filter_map (fun (p, { include_conditions ; _ }) ->
+        nix_optionals_opt
+          (nix_bool_of_filter @@ OpamFilter.partial_eval propagation_env include_conditions)
+          (nix_list [nix_var @@ argname_of_pkgname p]))
+    |> nix_list
+    |> nix_concat_lists
+  in
   fprintf ppf "propagatedBuildInputs = ";
-  pp_nix_expr ppf @@ nix_list (List.map (fun p -> nix_var @@ argname_of_pkgname p) (NixDeps.keys nix_pkg.prop_deps));
+  pp_nix_expr ppf propagatedBuildInputs;
   fprintf ppf ";@ ";
   fprintf ppf "configurePhase = \"true\"";
   fprintf ppf ";@ ";
@@ -539,16 +573,16 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   ()
 
 let nixdep_of_filtered_constraints fc =
-  let rec go fc = match fc with
+  let rec separate fc = match fc with
   | Empty -> [], Empty
   | Block _ -> raise Waat
   | And (l, r) ->
-      let lp, la = go l in
-      let rp, ra = go r in
+      let lp, la = separate l in
+      let rp, ra = separate r in
       lp @ rp, And (la, ra)
   | Or (l, r) -> (
-      let lp, la = go l in
-      let rp, ra = go r in
+      let lp, la = separate l in
+      let rp, ra = separate r in
       match lp, rp with
       | [], [] -> [], Or (la, ra)
       | _, _ -> raise Waat)
@@ -563,7 +597,18 @@ let nixdep_of_filtered_constraints fc =
   | Atom (Constraint (_relop, FDefined _)) -> raise Waat
   | Atom (Constraint (_relop, FUndef _)) -> raise Waat
   in
-  let filtered_constraints = [go fc] in
+  let rec cond fc = match fc with
+  | Empty -> FBool true
+  | Block _ -> raise Waat
+  | And (l, r) -> FOr (cond l, cond r)
+  | Or (l, r) -> (match cond l, cond r with
+    | FBool true, FBool true -> FBool true
+    | _, _ -> raise Waat)
+  | Atom (Filter f) -> f
+  | Atom (Constraint _) -> FBool true
+  in
+  let filtered_constraints = [separate fc] in
+  let include_conditions = cond fc in
   let optionality_fc = OpamFormula.partial_eval (function
     | Filter f -> (match OpamFilter.partial_eval optionality_env f with
       | FBool true -> `True
@@ -576,7 +621,7 @@ let nixdep_of_filtered_constraints fc =
   | `Formula Empty -> true
   | `Formula f -> false
   in
-  { is_required; ever_required = (optionality_fc <> `False); filtered_constraints }
+  { is_required; ever_required = (optionality_fc <> `False); filtered_constraints; include_conditions }
 
 exception Unclosed_variable_replacement of string
 
@@ -616,14 +661,6 @@ let nix_expand_string s = let f = function
 let nix_expr_of_arg = function
   | CString s -> nix_list [nix_expand_string s]
   | CIdent v -> nix_list [resolve_ident @@ parse_ident v]
-
-let nix_optionals_opt b l = match b with
-  | `NTrue -> Some l
-  | `NFalse -> None
-  | cond -> match l with
-    | `NList [] -> None
-    | `NList (x::[]) -> Some (nix_stdcall2 "optional" cond x)
-    | _ -> Some (nix_stdcall2 "optionals" cond l)
 
 let nix_expr_of_patch p = nix_list [nix_str @@ OpamFilename.Base.to_string p]
 
@@ -665,7 +702,7 @@ let rec nixdeps_of_depopts ~refnames depopts = match depopts with
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
   | Or (l, r) -> NixDeps.union (nixdeps_of_depopts ~refnames l) (nixdeps_of_depopts ~refnames r)
   | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@
-    { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false }
+    { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false; include_conditions = FIdent([Some name],OpamVariable.of_string "installed",None) }
 
 let nixdeps_of_depexts depexts =
   depexts |> List.map (fun (pkgs, flt) ->
@@ -674,7 +711,7 @@ let nixdeps_of_depexts depexts =
       (nix_list @@ List.map nix_str pkgs)
     |> function
       | None -> []
-      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = [] }
+      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = []; include_conditions = FBool true }
                                                      | _ -> raise @@ Wat "depext constraint too complex")
       | Some _ -> raise @@ Wat "depext constraint too complex")
   |> List.concat

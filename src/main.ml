@@ -426,17 +426,15 @@ let rec pp_nix_expr_prec prec ppf nb =
       fprintf ppf "@[<h>\"%s\"@]" @@ nix_escape s
   | `NStrI pieces -> fprintf ppf "@[<h>\"%a\"@]" pp_nix_str pieces
   | `NList pieces ->
-      fprintf ppf "[@ @[";
+      fprintf ppf "[@;<1 2>@[";
       pieces |> List.iter (fun x ->
         pp_nix_expr_prec `PList ppf x;
         fprintf ppf "@ ");
       fprintf ppf "@]]"
   | `NSet attributes ->
-      fprintf ppf "{@ @[";
-      attributes |> List.iter (fun (k,v) ->
-        fprintf ppf "%s@ =@[@ %a@];@;" k (pp_nix_expr_prec `PElse) v
-      );
-      fprintf ppf "@ @]}"
+      fprintf ppf "{@;<1 2>@[<hv>%a@]@ }"
+        (pp_print_list ~pp_sep:pp_print_space pp_nix_attribute)
+        attributes
   | `NIf (cond,tbranch,ebranch) ->
       let paren = match prec with
         | _ -> false
@@ -460,6 +458,8 @@ and pp_nix_str ppf pieces = pieces |> List.iter
        pp_print_text ppf "${";
        pp_nix_expr_prec `PElse ppf exp;
        pp_print_text ppf "}")
+and pp_nix_attribute ppf (k,v) =
+  Format.fprintf ppf "@[%s = %a;@]" k (pp_nix_expr_prec `PElse) v
 
 let pp_nix_expr = pp_nix_expr_prec `PElse
 

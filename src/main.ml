@@ -790,7 +790,7 @@ let nix_src_of_opam name version opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let nix_of_opam ?name ?version ~refnames ~patches opam =
+let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts opam =
   let name = match name with
   | Some x -> x
   | None -> OpamFile.OPAM.name opam in
@@ -820,7 +820,10 @@ let nix_of_opam ?name ?version ~refnames ~patches opam =
   (* TODO handle messages *)
   (* TODO handle post_messages *)
   (* TODO handle depexts *)
-  let depexts = nixdeps_of_depexts opam.depexts in
+  let extra_depexts = OpamStd.Option.map_default (fun x -> [x,FBool true]) [] @@
+    OpamPackage.Name.Map.find_opt name extra_depexts
+  in
+  let depexts = nixdeps_of_depexts (opam.depexts @ extra_depexts) in
   let deps = NixDeps.union deps depexts in
   (* TODO handle libraries *)
   (* TODO handle syntax *)
@@ -886,10 +889,18 @@ let nixify =
        than $(i,NAME)."
       Arg.(pair ~sep:':' OpamArg.package_name string)
   in
-  let nixify global_options files package warnings_sel refnames patches =
+  let depexts =
+    OpamArg.mk_opt_all ["depext";"x"] "PACKAGE:NIXPACKAGE"
+      "Create a dependency from the OPAM package $(i,PACKAGE) to the nix package \
+       $(i,NIXPACKAGE), specified by attribute name.  Ignored when processing \
+       packages other than $(i,PACKAGE)."
+      Arg.(pair ~sep:':' OpamArg.package_name OpamArg.package_name)
+  in
+  let nixify global_options files package warnings_sel refnames patches extra_depexts =
     OpamArg.apply_global_options global_options;
     let refnames = OpamPackage.Name.Map.of_list refnames in
     let patches = OpamPackage.Name.Map.(List.fold_right (fun (pk,pt) -> update pk (List.cons (OpamFilename.Base.of_string pt, None)) []) patches empty) in
+    let extra_depexts = OpamPackage.Name.Map.(List.fold_right (fun (pk,px) -> update pk (List.cons (OpamPackage.Name.to_string px)) []) extra_depexts empty) in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -969,7 +980,7 @@ let nixify =
             opam
               |> OpamStd.Option.map OpamFormatUpgrade.opam_file_from_1_2_to_2_0
               |> OpamStd.Option.iter (fun upgraded ->
-                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam ~refnames ~patches upgraded);
+                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam ~refnames ~patches ~extra_depexts upgraded);
             err || failed
           with
           | Parsing.Parse_error
@@ -981,7 +992,7 @@ let nixify =
     in
     if err then OpamStd.Sys.exit_because `False
   in
-  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches),
+  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts),
   OpamArg.term_info "opam-nixify" ~doc ~man
 
 let () =

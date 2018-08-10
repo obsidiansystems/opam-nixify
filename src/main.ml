@@ -168,7 +168,7 @@ let nix_impl l r = match l, r with
   | `NFalse, _ -> l
   | _, `NTrue -> r
   | _, `NFalse -> nix_not l
-  | x , y -> `NOr (x,y)
+  | x , y -> `NImpl (x,y)
 let nix_if c t e = match c with
   | `NTrue -> t
   | `NFalse -> e
@@ -355,7 +355,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       in
       if paren then pp_print_text ppf "(" else ();
       pp_nix_expr_prec `PImpl ppf l;
-      pp_print_text ppf " || ";
+      pp_print_text ppf " -> ";
       pp_nix_expr_prec `PImpl ppf r;
       if paren then pp_print_text ppf ")" else ()
   | `NNot v ->

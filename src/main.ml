@@ -220,12 +220,15 @@ let nix_stdcall f = nix_ap @@ nix_stdlib f
 let nix_stdcall2 f x = nix_ap @@ nix_stdcall f x
 let nix_typed t x = `NTy (t,x)
 let rec nix_append_lists = function
+  | `NList [] -> fun y -> y
   | `NList x as nx -> (function
     | `NList y -> nix_list (x @ y)
     | `NAppend (`NList y,z) -> `NAppend (nix_list (x @ y), z)
     | y -> `NAppend (nx, y))
   | `NAppend (x,y) -> fun z -> `NAppend (x, nix_append_lists y z)
-  | x -> fun y -> `NAppend (x,y)
+  | x -> function
+    | `NList [] -> x
+    | y -> `NAppend (x,y)
 let rec nix_concat_lists_ = function
   | l :: ls -> nix_append_lists l (nix_concat_lists_ ls)
   | [] -> nix_list []

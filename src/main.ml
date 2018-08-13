@@ -580,6 +580,125 @@ let pp_nix_pkg ?opam ppf nix_pkg =
   fprintf ppf "@.";
   ()
 
+module SettingsSyntax = struct
+
+  module Pp = OpamPp
+  open Pp.Op
+  module I = OpamFormat.I
+  module V = OpamFormat.V
+
+  let internal = "nixify-settings"
+
+  type t = {
+    opam_version: opam_version;
+
+    (* The world to build *)
+    world_path : OpamFilename.t option;
+    included : OpamListCommand.selector OpamFormula.formula;
+    skip : OpamListCommand.selector OpamFormula.formula;
+    inherited : (string * filter) list;
+
+    (* Identification and location of package *)
+    attribute_name : (string * filter option) list;
+    full_name : (string * filter option) list;
+    expression_path : (string * filter option) list;
+
+    (* Alterations to package metadata *)
+    patches : (basename * filter) list;
+    depexts : (string list * filter) list;
+  }
+
+  let empty = {
+    opam_version = OpamVersion.current_nopatch;
+
+    world_path = None;
+    included = OpamFormula.Empty;
+    skip = OpamFormula.Empty;
+    inherited = [];
+
+    attribute_name = [];
+    full_name = [];
+    expression_path = [];
+
+    patches = [];
+    depexts = [];
+  }
+
+  (* Getters *)
+  let opam_version t = t.opam_version
+  let world_path t = t.world_path
+  let included t = t.included
+  let skip t = t.skip
+  let inherited t = t.inherited
+  let attribute_name t = t.attribute_name
+  let full_name t = t.full_name
+  let expression_path t = t.expression_path
+  let patches t = t.patches
+  let depexts t = t.depexts
+
+  (* Setters *)
+  let with_opam_version opam_version t = { t with opam_version }
+  let with_world_path world_path t = { t with world_path }
+  let with_included included t = { t with included }
+  let with_skip skip t = { t with skip }
+  let with_inherited inherited t = { t with inherited }
+  let with_attribute_name attribute_name t = { t with attribute_name }
+  let with_full_name full_name t = { t with full_name }
+  let with_expression_path expression_path t = { t with expression_path }
+  let with_patches patches t = { t with patches }
+  let with_depexts depexts t = { t with depexts }
+
+  (* Field parser-printers *)
+
+  let sopt f x = f (Some x)
+  (* TODO support lots more selectors, not just patterns *)
+  let selectors =
+    let open OpamListCommand in
+    Pp.pp ~name:"selector formula"
+      (fun ~pos:_ -> pattern_selector)
+      (fun x -> OpamFormula.ors_to_list x |> List.map @@ fun x ->
+        OpamFormula.ands_to_list x |> function
+          | Atom (Pattern ({case_sensitive = false; exact = true; glob = true; fields = ["name"]; ext_fields = false},n)) :: tl -> (match tl with
+            | [Atom (Pattern ({case_sensitive = false; exact = true; glob = true; fields = ["version"]; ext_fields = false},v))] -> n ^ "." ^ v
+            | [] -> n
+            | _ -> Pp.unexpected ())
+          | _ -> Pp.unexpected ())
+
+  let fields = [
+    "opam-version", Pp.ppacc with_opam_version opam_version @@
+      V.string -| Pp.of_module "opam-version" (module OpamVersion);
+    "world-path", Pp.ppacc_opt (sopt with_world_path) world_path @@
+      V.string -| Pp.of_module "filename" (module OpamFilename);
+    "include", Pp.ppacc with_included included @@
+      V.map_list V.string -| selectors;
+    "skip", Pp.ppacc with_skip skip @@
+      V.map_list V.string -| selectors;
+    "inherit", Pp.ppacc with_inherited inherited @@
+      V.(map_list @@ map_option string filter);
+    "attribute-name", Pp.ppacc with_attribute_name attribute_name @@
+      V.(map_list @@ map_option string (Pp.opt filter));
+    "full-name", Pp.ppacc with_full_name full_name @@
+      V.(map_list @@ map_option string (Pp.opt filter));
+    "expression-path", Pp.ppacc with_expression_path expression_path @@
+      V.(map_list @@ map_option string (Pp.opt filter));
+    "patches", Pp.ppacc with_patches patches @@
+      V.(map_list @@ map_option (string -| Pp.of_module "basename" (module OpamFilename.Base)) filter);
+    "depexts", Pp.ppacc with_depexts depexts @@
+      V.(map_list @@ map_option (map_list string) filter);
+  ]
+
+  let pp =
+    let name = internal in
+    I.map_file @@
+    I.fields ~name ~empty fields -|
+    I.show_errors ~name ~strict:true ()
+end
+
+module SettingsFile = struct
+  include SettingsSyntax
+  include OpamFile.SyntaxFile(SettingsSyntax)
+end
+
 let nixdep_of_filtered_constraints fc =
   let rec separate fc = match fc with
   | Empty -> [], Empty
@@ -904,11 +1023,21 @@ let nixify =
        packages other than $(i,PACKAGE)."
       Arg.(pair ~sep:':' OpamArg.package_name OpamArg.package_name)
   in
-  let nixify global_options files package warnings_sel refnames patches extra_depexts =
+  let settings =
+    OpamArg.mk_opt ["settings"] "FILE"
+      "A settings file indicating what kind of output to generate."
+      Arg.(some OpamArg.existing_filename_or_dash) None
+  in
+  let nixify global_options files package warnings_sel refnames patches extra_depexts settings =
     OpamArg.apply_global_options global_options;
     let refnames = OpamPackage.Name.Map.of_list refnames in
     let patches = OpamPackage.Name.Map.(List.fold_right (fun (pk,pt) -> update pk (List.cons (OpamFilename.Base.of_string pt, None)) []) patches empty) in
     let extra_depexts = OpamPackage.Name.Map.(List.fold_right (fun (pk,px) -> update pk (List.cons (OpamPackage.Name.to_string px)) []) extra_depexts empty) in
+    let _settings = match settings with
+      | None -> SettingsFile.empty
+      | Some (None) -> SettingsFile.read_from_channel ~filename:(OpamFile.make @@ OpamFilename.of_string "-") stdin
+      | Some (Some f) -> SettingsFile.read @@ OpamFile.make f
+    in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -1000,7 +1129,7 @@ let nixify =
     in
     if err then OpamStd.Sys.exit_because `False
   in
-  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts),
+  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts $settings),
   OpamArg.term_info "opam-nixify" ~doc ~man
 
 let () =

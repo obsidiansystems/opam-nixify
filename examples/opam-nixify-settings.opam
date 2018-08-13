@@ -1,0 +1,18 @@
+opam-version: "2.0"
+world-path: "nix/ocaml-modules/world.nix"
+include: ["*"]
+inherit: [
+  "pkgs.ocaml-ng.ocamlPackages_4_07" { name = "ocaml" | name = "ocamlfind" }
+]
+attribute-name: [
+  "findlib" { name = "ocamlfind" }
+]
+expression-path: [
+  "nix/ocaml-modules/%{attribute}%/default.nix"
+]
+depexts: [
+  ["ncurses"] { name = "lwt" }
+]
+patches: [
+  "pkg-config.patch" { name = "ocb-stubblr" }
+]

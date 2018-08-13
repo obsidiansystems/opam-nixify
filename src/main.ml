@@ -188,7 +188,7 @@ let nix_list vs = `NList vs
 let nix_is_bool x = match x with
   | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) | `NTy (`NTBool,_) -> `NTrue
   | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ | `NPath _ | `NTy (_,_) -> `NFalse
-  | _ -> `NAp (`NAttr (`NVar "builtin","isBool"),x)
+  | _ -> `NAp (`NAttr (`NVar "builtins","isBool"),x)
 let nix_stringify x = nix_if (nix_is_bool x) (nix_if x (nix_str "true") (nix_str "false")) x
 let nix_stri ls = match ls with
   | [] -> nix_str ""

@@ -121,7 +121,8 @@ type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_b
 type nix_bool = [`NTrue | `NFalse | vnix_bool]
 *)
 
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr)]
+type nix_type = [`NTBool | `NTStr | `NTList of nix_type | `NTSet | `NTPath | `NTFun ]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr) | `NTy of (nix_type * nix_expr)]
 type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 
 type nix_pkg = {
@@ -185,8 +186,8 @@ let nix_eq l r = match l, r with
 let nix_neq l r = nix_not (nix_eq l r)
 let nix_list vs = `NList vs
 let nix_is_bool x = match x with
-  | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) -> `NTrue
-  | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ | `NPath _ -> `NFalse
+  | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) | `NTy (`NTBool,_) -> `NTrue
+  | `NStr _ | `NStrI _ | `NNull | `NSet _ | `NList _ | `NPath _ | `NTy (_,_) -> `NFalse
   | _ -> `NAp (`NAttr (`NVar "builtin","isBool"),x)
 let nix_stringify x = nix_if (nix_is_bool x) (nix_if x (nix_str "true") (nix_str "false")) x
 let nix_stri ls = match ls with
@@ -217,6 +218,7 @@ let nix_attr x a = `NAttr (x,a)
 let nix_stdlib = nix_attr @@ nix_attr (nix_var "stdenv") "lib"
 let nix_stdcall f = nix_ap @@ nix_stdlib f
 let nix_stdcall2 f x = nix_ap @@ nix_stdcall f x
+let nix_typed t x = `NTy (t,x)
 let rec nix_append_lists = function
   | `NList x as nx -> (function
     | `NList y -> nix_list (x @ y)
@@ -256,7 +258,7 @@ let propagation_env v = match OpamVariable.Full.scope v, OpamVariable.to_string 
 
 let rec resolve_ident = function
   | (_::_::_) as ps,v -> List.fold_left nix_and nix_true @@ List.map (fun p -> resolve_ident ([p], v)) ps
-  | [],"name" -> nix_var "pname"
+  | [],"name" -> nix_typed `NTStr @@ nix_var "pname"
   | [],"jobs" -> nix_str "1"
   | [],"make" -> nix_str "make"
   | [],"lib" -> nix_str "$OCAMLFIND_DESTDIR"
@@ -267,7 +269,7 @@ let rec resolve_ident = function
   | [],"pinned" -> nix_false
   | [],"build" -> nix_true
   | [],"post" -> raise @@ Unsupported "post dependency"
-  | [],"with-test" -> nix_var "doCheck"
+  | [],"with-test" -> nix_typed `NTBool @@ nix_var "doCheck"
   | [],"with-doc" -> nix_true
   | [],"os" -> nix_str "linux"
   | [],"os-distribution" -> nix_str "nixos"
@@ -450,6 +452,8 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NPath p ->
       fprintf ppf "%s" p
+  | `NTy (_t,e) ->
+      pp_nix_expr_prec prec ppf e
 and pp_nix_str ppf pieces = pieces |> List.iter
   (fun piece -> let open Format in
      match piece with

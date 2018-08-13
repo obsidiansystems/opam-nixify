@@ -262,6 +262,7 @@ let propagation_env v = match OpamVariable.Full.scope v, OpamVariable.to_string 
 let rec resolve_ident = function
   | (_::_::_) as ps,v -> List.fold_left nix_and nix_true @@ List.map (fun p -> resolve_ident ([p], v)) ps
   | [],"name" -> nix_typed `NTStr @@ nix_var "pname"
+  | [],"version" -> nix_typed `NTStr @@ nix_var "version"
   | [],"jobs" -> nix_str "1"
   | [],"make" -> nix_str "make"
   | [],"lib" -> nix_str "$OCAMLFIND_DESTDIR"

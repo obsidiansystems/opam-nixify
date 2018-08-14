@@ -891,7 +891,9 @@ let is_zip_archive f =
   with Sys_error _ | End_of_file -> false
 
 
-let nix_src_of_opam name version opam =
+let nix_src_of_opam opam =
+  let name = OpamFile.OPAM.name opam in
+  let version = OpamFile.OPAM.version opam in
   OpamGlobalState.with_ `Lock_write @@ fun gt ->
   OpamSwitchState.with_ `Lock_write gt @@ fun st ->
   let open OpamProcess.Job.Op in
@@ -972,15 +974,9 @@ let nix_expression_path attribute settings opam =
   |> OpamFilter.expand_string env
   |> OpamFilename.of_string
 
-let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
-  let name = match name with
-  | Some x -> x
-  | None -> OpamFile.OPAM.name opam in
-  let version = match version with
-  | Some x -> x
-  | None -> OpamFile.OPAM.version opam in
-  let opam = OpamFile.OPAM.with_name name @@ OpamFile.OPAM.with_version version opam in
-  let attribute = nix_name ~refnames name in
+let nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam =
+  let pname = OpamFile.OPAM.name opam in
+  let version = OpamFile.OPAM.version opam in
   let deps = nixdeps_of_depends ~refnames (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
   let depopts = nixdeps_of_depopts ~refnames opam.depopts in
   let deps = NixDeps.union deps depopts in
@@ -995,7 +991,7 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam 
   (* TODO handle remove *)
   (* TODO handle substs *)
   let extra_patches = OpamStd.Option.default [] @@
-    OpamPackage.Name.Map.find_opt name patches
+    OpamPackage.Name.Map.find_opt pname patches
   in
   let patches = nix_expr_of_patches (opam.patches @ extra_patches) in
   (* TODO handle build_env *)
@@ -1004,7 +1000,7 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam 
   (* TODO handle post_messages *)
   (* TODO handle depexts *)
   let extra_depexts = OpamStd.Option.map_default (fun x -> [x,FBool true]) [] @@
-    OpamPackage.Name.Map.find_opt name extra_depexts
+    OpamPackage.Name.Map.find_opt pname extra_depexts
   in
   let depexts = nixdeps_of_depexts (opam.depexts @ extra_depexts) in
   let deps = NixDeps.union deps depexts in
@@ -1019,16 +1015,24 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam 
   (* TODO handle doc *)
   (* TODO handle bug_reports *)
   (* TODO handle extensions *)
-  let (src, extra_src, uses_zip) = nix_src_of_opam name version opam in
+  let (src, extra_src, uses_zip) = nix_src_of_opam opam in
   let extra_files = match opam.extra_files with | None -> [] | Some xs -> xs in
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   let out_path = nix_expression_path attribute settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
+  { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
 
 let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
-  `Generated (nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam)
+  let name = match name with
+  | Some x -> x
+  | None -> OpamFile.OPAM.name opam in
+  let version = match version with
+  | Some x -> x
+  | None -> OpamFile.OPAM.version opam in
+  let opam = OpamFile.OPAM.with_name name @@ OpamFile.OPAM.with_version version opam in
+  let attribute = nix_name ~refnames name in
+  `Generated (nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam)
 
 let with_virtual_ lock ?rt ?(switch=OpamStateConfig.get_switch_opt ()) gt f =
   let open OpamSwitchState in

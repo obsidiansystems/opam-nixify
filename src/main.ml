@@ -582,6 +582,34 @@ let pp_nix_pkg ppf nix_pkg =
   fprintf ppf "@]";
   ()
 
+let rerelativize_str =
+  let rec go acc base path =
+    if base = "." || base = ""
+    then Filename.concat acc path
+    else if OpamStd.String.starts_with ~prefix:(Filename.concat base "") path
+    then Filename.concat acc (OpamStd.String.remove_prefix ~prefix:(Filename.concat base "") path)
+    else go (Filename.concat acc "..") (Filename.dirname base) path
+  in go ""
+
+let rerelativize_nix base path =
+  rerelativize_str (OpamFilename.Dir.to_string base) @@
+    if OpamFilename.Base.to_string (OpamFilename.basename path) = "default.nix"
+    then OpamFilename.Dir.to_string (OpamFilename.dirname path)
+    else OpamFilename.to_string path
+
+let pp_nix_world ppf world =
+  let open Format in
+  pp_nix_args ppf [nix_arg "pkgs" None];
+  pp_print_text ppf "let mkWorld = overrides: with pkgs.lib; fix' (extends overrides (self: { callPackage = pkgs.newScope self })) in mkWorld (super: self: ";
+  fprintf ppf "{@;<1 2>@[<hv>";
+  world |> List.iter (function
+    | `CallPackage (attr, path) ->
+        fprintf ppf "%s = self.callPackage %s/%s {};@ "
+          (OpamPackage.Name.to_string attr)
+          (Filename.dirname path)
+          (Filename.basename path));
+  fprintf ppf "@]}"
+
 module SettingsSyntax = struct
 
   module Pp = OpamPp
@@ -1143,6 +1171,10 @@ let nixify =
           "--package and a file argument are incompatible"
     in
     let msg = OpamConsole.errmsg in
+    let path_adjust = settings.world_path
+      |> OpamStd.Option.map OpamFilename.dirname
+      |> OpamStd.Option.map_default rerelativize_nix OpamFilename.to_string
+    in
     let err, dlist =
       List.fold_left (fun (err,dlist) opam_f ->
           try
@@ -1181,7 +1213,7 @@ let nixify =
               prep_nix_of_opam ~refnames ~patches ~extra_depexts ~settings opam |> function
                 | `Generated nix_pkg ->
                   OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
-                  (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, nix_pkg.out_path) :: xs)
+                  (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)
             ) |> OpamStd.Option.default dlist
             in
             err || failed, dlist
@@ -1194,6 +1226,9 @@ let nixify =
         (false, fun xs -> xs) files
     in
     if err then OpamStd.Sys.exit_because `False
+           else match settings.world_path with
+             | None -> Format.printf "%a@." pp_nix_world (dlist [])
+             | Some path -> OpamFilename.write path @@ Format.asprintf "%a@." pp_nix_world (dlist [])
   in
   Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts $settings),
   OpamArg.term_info "opam-nixify" ~doc ~man

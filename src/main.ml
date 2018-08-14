@@ -1165,7 +1165,8 @@ let nixify =
         (OpamGlobalState.with_ `Lock_none @@ fun gt ->
          with_virtual_ `Lock_none gt @@ fun st ->
          let pkgs = OpamListCommand.filter st ~base:st.installed filter in
-         OpamPackage.Set.elements pkgs |> List.map (fun pkg ->
+         let unpkgs = OpamListCommand.filter st ~base:pkgs settings.skip in
+         OpamPackage.Set.elements (OpamPackage.Set.diff pkgs unpkgs) |> List.map (fun pkg ->
            try
              let opam = OpamSwitchState.opam st pkg in
              match OpamPinned.orig_opam_file opam with

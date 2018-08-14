@@ -970,6 +970,23 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts opam =
   (* TODO handle metadata_dir *)
   { pname = name; version; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip }
 
+let with_virtual_ lock ?rt ?(switch=OpamStateConfig.get_switch_opt ()) gt f =
+  let open OpamSwitchState in
+  let open OpamStateTypes in
+  (match rt with
+   | Some rt -> fun f -> f (rt :> unlocked repos_state)
+   | None -> OpamRepositoryState.with_ `Lock_none gt)
+  @@ fun rt ->
+  let st = match switch with
+  | Some switch -> load lock gt rt switch
+  | None -> load_virtual gt rt in
+  let cleanup_backup = (* do_backup lock st *) ignore (* XXX but only using this unlocked so far anyway *) in
+  try let r = f st in ignore (unlock st); cleanup_backup true; r
+  with e ->
+    OpamStd.Exn.finalise e @@ fun () ->
+    ignore (unlock st);
+    if not OpamCoreConfig.(!r.keep_log_dir) then cleanup_backup false
+
 (* NIXIFY *)
 let nixify_doc = "Generates nix expressions from $(i,opam) files."
 let nixify =
@@ -1033,7 +1050,7 @@ let nixify =
     let refnames = OpamPackage.Name.Map.of_list refnames in
     let patches = OpamPackage.Name.Map.(List.fold_right (fun (pk,pt) -> update pk (List.cons (OpamFilename.Base.of_string pt, None)) []) patches empty) in
     let extra_depexts = OpamPackage.Name.Map.(List.fold_right (fun (pk,px) -> update pk (List.cons (OpamPackage.Name.to_string px)) []) extra_depexts empty) in
-    let _settings = match settings with
+    let settings = match settings with
       | None -> SettingsFile.empty
       | Some (None) -> SettingsFile.read_from_channel ~filename:(OpamFile.make @@ OpamFilename.of_string "-") stdin
       | Some (Some f) -> SettingsFile.read @@ OpamFile.make f
@@ -1047,10 +1064,23 @@ let nixify =
       | l ->
         List.map (fun (_name,f) -> Some f) l
     in
-    let files = match files, package with
-      | [], None -> (* Lookup in cwd if nothing was specified *)
+    let files = match settings.included, files, package with
+      | OpamFormula.Empty, [], None -> (* Lookup in cwd if nothing was specified *)
         opam_files_in_dir (OpamFilename.cwd ())
-      | files, None ->
+      | filter, [], None ->
+        (OpamGlobalState.with_ `Lock_none @@ fun gt ->
+         with_virtual_ `Lock_none gt @@ fun st ->
+         let pkgs = OpamListCommand.filter st ~base:st.installed filter in
+         OpamPackage.Set.elements pkgs |> List.map (fun pkg ->
+           try
+             let opam = OpamSwitchState.opam st pkg in
+             match OpamPinned.orig_opam_file opam with
+             | None -> raise Not_found
+             | some -> some
+           with Not_found ->
+             OpamConsole.error_and_exit `Not_found "No opam file found for %s"
+               (OpamPackage.to_string pkg)))
+      | _, files, None ->
         List.map (function
             | None -> [None] (* this means '-' was specified for stdin *)
             | Some (OpamFilename.D d) ->
@@ -1059,7 +1089,7 @@ let nixify =
               [Some (OpamFile.make f)])
           files
         |> List.flatten
-      | [], Some pkg ->
+      | _, [], Some pkg ->
         (OpamGlobalState.with_ `Lock_none @@ fun gt ->
          OpamSwitchState.with_ `Lock_none gt @@ fun st ->
          try
@@ -1076,7 +1106,7 @@ let nixify =
              (OpamPackage.Name.to_string (fst pkg))
              (match snd pkg with None -> ""
                                | Some v -> "."^OpamPackage.Version.to_string v))
-      | _::_, Some _ ->
+      | _, _::_, Some _ ->
         OpamConsole.error_and_exit `Bad_arguments
           "--package and a file argument are incompatible"
     in

@@ -607,7 +607,10 @@ let pp_nix_world ppf world =
         fprintf ppf "%s = self.callPackage %s/%s {};@ "
           (OpamPackage.Name.to_string attr)
           (Filename.dirname path)
-          (Filename.basename path));
+          (Filename.basename path)
+    | `Inherit (attr, expr) ->
+        fprintf ppf "inherit (%s) %s;@ " expr
+          (OpamPackage.Name.to_string attr));
   fprintf ppf "@]}"
 
 module SettingsSyntax = struct
@@ -627,6 +630,7 @@ module SettingsSyntax = struct
     included : OpamListCommand.selector OpamFormula.formula;
     skip : OpamListCommand.selector OpamFormula.formula;
     inherited : (string * filter) list;
+    custom : (string * filter) list;
 
     (* Identification and location of package *)
     attribute_name : (string * filter option) list;
@@ -634,7 +638,7 @@ module SettingsSyntax = struct
     expression_path : (string * filter option) list;
 
     (* Alterations to package metadata *)
-    patches : (basename * filter) list;
+    patches : (OpamFilename.t * filter) list;
     depexts : (string list * filter) list;
   }
 
@@ -645,6 +649,7 @@ module SettingsSyntax = struct
     included = OpamFormula.Empty;
     skip = OpamFormula.Empty;
     inherited = [];
+    custom = [];
 
     attribute_name = [];
     full_name = [];
@@ -660,6 +665,7 @@ module SettingsSyntax = struct
   let included t = t.included
   let skip t = t.skip
   let inherited t = t.inherited
+  let custom t = t.custom
   let attribute_name t = t.attribute_name
   let full_name t = t.full_name
   let expression_path t = t.expression_path
@@ -672,6 +678,7 @@ module SettingsSyntax = struct
   let with_included included t = { t with included }
   let with_skip skip t = { t with skip }
   let with_inherited inherited t = { t with inherited }
+  let with_custom custom t = { t with custom }
   let with_attribute_name attribute_name t = { t with attribute_name }
   let with_full_name full_name t = { t with full_name }
   let with_expression_path expression_path t = { t with expression_path }
@@ -705,6 +712,8 @@ module SettingsSyntax = struct
       V.map_list V.string -| selectors;
     "inherit", Pp.ppacc with_inherited inherited @@
       V.(map_list @@ map_option string filter);
+    "custom", Pp.ppacc with_custom custom @@
+      V.(map_list @@ map_option string filter);
     "attribute-name", Pp.ppacc with_attribute_name attribute_name @@
       V.(map_list @@ map_option string (Pp.opt filter));
     "full-name", Pp.ppacc with_full_name full_name @@
@@ -712,7 +721,7 @@ module SettingsSyntax = struct
     "expression-path", Pp.ppacc with_expression_path expression_path @@
       V.(map_list @@ map_option string (Pp.opt filter));
     "patches", Pp.ppacc with_patches patches @@
-      V.(map_list @@ map_option (string -| Pp.of_module "basename" (module OpamFilename.Base)) filter);
+      V.(map_list @@ map_option (string -| Pp.of_module "filename" (module OpamFilename)) filter);
     "depexts", Pp.ppacc with_depexts depexts @@
       V.(map_list @@ map_option (map_list string) filter);
   ]
@@ -965,14 +974,30 @@ let ident_env_opam ?other opam = ident_env ?other (OpamFile.OPAM.name opam) (Opa
 let possibly_update_opt env x (y, filter_opt) =
   if OpamFilter.opt_eval_to_bool env filter_opt then y else x
 
-let possibly_update x (y, filter) =
-  possibly_update_opt x (y, Some filter)
+let possibly_update env x (y, filter) =
+  possibly_update_opt env x (y, Some filter)
+
+let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
 
 let nix_expression_path attribute settings opam =
   let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
   List.fold_left (possibly_update_opt env) "-" settings.SettingsFile.expression_path
   |> OpamFilter.expand_string env
   |> OpamFilename.of_string
+
+let inherit_source attribute settings opam =
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  settings.SettingsFile.inherited
+  |> map_filtered_list OpamStd.Option.some
+  |> List.fold_left (possibly_update env) None
+
+let custom_expression attribute settings opam =
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  settings.SettingsFile.custom
+  |> map_filtered_list OpamStd.Option.some
+  |> List.fold_left (possibly_update env) None
+  |> OpamStd.Option.map (OpamFilter.expand_string env)
+  |> OpamStd.Option.map OpamFilename.of_string
 
 let nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam =
   let pname = OpamFile.OPAM.name opam in
@@ -1032,7 +1057,12 @@ let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings 
   | None -> OpamFile.OPAM.version opam in
   let opam = OpamFile.OPAM.with_name name @@ OpamFile.OPAM.with_version version opam in
   let attribute = nix_name ~refnames name in
-  `Generated (nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam)
+  let open OpamStd.Option.Op in
+  let answer = (custom_expression attribute settings opam >>| fun x () -> `Custom (attribute, x))
+    ++ (inherit_source attribute settings opam >>| fun x () -> `Inherit (attribute, x))
+    +! (fun () -> `Generated (nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam))
+  in
+  answer ()
 
 let with_virtual_ lock ?rt ?(switch=OpamStateConfig.get_switch_opt ()) gt f =
   let open OpamSwitchState in
@@ -1218,6 +1248,10 @@ let nixify =
                 | `Generated nix_pkg ->
                   OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)
+                | `Inherit (attr, expr) ->
+                  (fun xs -> dlist @@ `Inherit (attr, expr) :: xs)
+                | `Custom (attr, path) ->
+                  (fun xs -> dlist @@ `CallPackage (attr, path_adjust path) :: xs)
             ) |> OpamStd.Option.default dlist
             in
             err || failed, dlist
@@ -1229,8 +1263,9 @@ let nixify =
             true, dlist)
         (false, fun xs -> xs) files
     in
-    if err then OpamStd.Sys.exit_because `False
-           else match settings.world_path with
+    (* if err then OpamStd.Sys.exit_because `False
+           else *)
+    match settings.world_path with
              | None -> Format.printf "%a@." pp_nix_world (dlist [])
              | Some path -> OpamFilename.write path @@ Format.asprintf "%a@." pp_nix_world (dlist [])
   in

@@ -139,6 +139,7 @@ type nix_pkg = {
   extra_src: (OpamTypes.basename * nix_expr) list;
   uses_zip: bool;
   out_path: OpamFilename.t;
+  raw_opam: OpamFile.OPAM.t option;
 }
 
 exception Unsupported of string
@@ -488,10 +489,10 @@ let pp_nix_args ppf args =
   pp_print_list ~pp_sep:(fun ppf _ -> fprintf ppf ",@ ") pp_nix_arg ppf args;
   fprintf ppf "@ }:@]@ "
 
-let pp_nix_pkg ?opam ppf nix_pkg =
+let pp_nix_pkg ppf nix_pkg =
   let open Format in
   fprintf ppf "@[<hv>";
-  (match opam with
+  (match nix_pkg.raw_opam with
   | None -> ();
   | Some file ->
       fprintf ppf "/*@[";
@@ -992,7 +993,7 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam 
   let out_path = nix_expression_path settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path }
+  { pname = name; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
 
 let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
   `Generated (nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam)
@@ -1175,7 +1176,7 @@ let nixify =
               let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
               prep_nix_of_opam ~refnames ~patches ~extra_depexts ~settings opam |> function
                 | `Generated nix_pkg ->
-                  Format.printf "%a@." (pp_nix_pkg ~opam) nix_pkg;
+                  Format.printf "%a@." pp_nix_pkg nix_pkg;
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, nix_pkg.out_path) :: xs)
             ) |> OpamStd.Option.default dlist
             in

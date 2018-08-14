@@ -128,6 +128,7 @@ type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
 type nix_pkg = {
   pname: OpamPackage.Name.t;
   version: OpamPackage.Version.t;
+  attribute: OpamPackage.Name.t;
   deps: NixDeps.t;
   prop_deps: NixDeps.t;
   conflicts: NixDeps.t;
@@ -137,6 +138,7 @@ type nix_pkg = {
   src: nix_expr;
   extra_src: (OpamTypes.basename * nix_expr) list;
   uses_zip: bool;
+  out_path: OpamFilename.t;
 }
 
 exception Unsupported of string
@@ -917,14 +919,35 @@ let nix_src_of_opam name version opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts opam =
+let ident_env name version fv = match OpamVariable.Full.scope fv with
+  | Package _ -> None
+  | _ -> match OpamVariable.to_string (OpamVariable.Full.variable fv) with
+    | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name)
+    | "version" -> Some (OpamVariable.string @@ OpamPackage.Version.to_string version)
+    | _ -> None
+
+let ident_env_opam opam = ident_env (OpamFile.OPAM.name opam) (OpamFile.OPAM.version opam)
+
+let possibly_update_opt env x (y, filter_opt) =
+  if OpamFilter.opt_eval_to_bool env filter_opt then x else y
+
+let possibly_update x (y, filter) =
+  possibly_update_opt x (y, Some filter)
+
+let nix_expression_path settings opam =
+  List.fold_left (possibly_update_opt (ident_env_opam opam)) "-" settings.SettingsFile.expression_path
+  |> OpamFilter.expand_string (ident_env_opam opam)
+  |> OpamFilename.of_string
+
+let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
   let name = match name with
   | Some x -> x
   | None -> OpamFile.OPAM.name opam in
   let version = match version with
   | Some x -> x
   | None -> OpamFile.OPAM.version opam in
-  let _ref_name = nix_name ~refnames name in
+  let opam = OpamFile.OPAM.with_name name @@ OpamFile.OPAM.with_version version opam in
+  let attribute = nix_name ~refnames name in
   let deps = nixdeps_of_depends ~refnames (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
   let depopts = nixdeps_of_depopts ~refnames opam.depopts in
   let deps = NixDeps.union deps depopts in
@@ -966,9 +989,13 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts opam =
   let (src, extra_src, uses_zip) = nix_src_of_opam name version opam in
   let extra_files = match opam.extra_files with | None -> [] | Some xs -> xs in
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
+  let out_path = nix_expression_path settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname = name; version; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip }
+  { pname = name; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path }
+
+let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
+  `Generated (nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam)
 
 let with_virtual_ lock ?rt ?(switch=OpamStateConfig.get_switch_opt ()) gt f =
   let open OpamSwitchState in
@@ -1111,8 +1138,8 @@ let nixify =
           "--package and a file argument are incompatible"
     in
     let msg = OpamConsole.errmsg in
-    let err =
-      List.fold_left (fun err opam_f ->
+    let err, dlist =
+      List.fold_left (fun (err,dlist) opam_f ->
           try
             let warnings,opam =
               match opam_f with
@@ -1144,18 +1171,22 @@ let nixify =
                 (if failed then OpamConsole.colorise `red "Errors."
                  else OpamConsole.colorise `yellow "Warnings.")
                 (OpamFileTools.warns_to_string warnings);
-            opam
-              |> OpamStd.Option.map OpamFormatUpgrade.opam_file_from_1_2_to_2_0
-              |> OpamStd.Option.iter (fun upgraded ->
-                   Format.printf "%a" (pp_nix_pkg ~opam:upgraded) @@ nix_of_opam ~refnames ~patches ~extra_depexts upgraded);
-            err || failed
+            let dlist = opam |> OpamStd.Option.map (fun opam ->
+              let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
+              prep_nix_of_opam ~refnames ~patches ~extra_depexts ~settings opam |> function
+                | `Generated nix_pkg ->
+                  Format.printf "%a@." (pp_nix_pkg ~opam) nix_pkg;
+                  (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, nix_pkg.out_path) :: xs)
+            ) |> OpamStd.Option.default dlist
+            in
+            err || failed, dlist
           with
           | Parsing.Parse_error
           | OpamLexer.Error _
           | OpamPp.Bad_format _ ->
             msg "File format error\n";
-            true)
-        false files
+            true, dlist)
+        (false, fun xs -> xs) files
     in
     if err then OpamStd.Sys.exit_because `False
   in

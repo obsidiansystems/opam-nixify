@@ -580,7 +580,6 @@ let pp_nix_pkg ppf nix_pkg =
   fprintf ppf ";";
   fprintf ppf "@]@ }";
   fprintf ppf "@]";
-  fprintf ppf "@.";
   ()
 
 module SettingsSyntax = struct
@@ -920,24 +919,29 @@ let nix_src_of_opam name version opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let ident_env name version fv = match OpamVariable.Full.scope fv with
+let simple_env f fv = match OpamVariable.Full.scope fv with
   | Package _ -> None
-  | _ -> match OpamVariable.to_string (OpamVariable.Full.variable fv) with
-    | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name)
-    | "version" -> Some (OpamVariable.string @@ OpamPackage.Version.to_string version)
-    | _ -> None
+  | _ -> f @@ OpamVariable.to_string (OpamVariable.Full.variable fv)
 
-let ident_env_opam opam = ident_env (OpamFile.OPAM.name opam) (OpamFile.OPAM.version opam)
+let ident_senv ?(other = OpamStd.Option.none) name version = function
+  | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name)
+  | "version" -> Some (OpamVariable.string @@ OpamPackage.Version.to_string version)
+  | v -> other v
+
+let ident_env ?other name variable = simple_env (ident_senv ?other name variable)
+
+let ident_env_opam ?other opam = ident_env ?other (OpamFile.OPAM.name opam) (OpamFile.OPAM.version opam)
 
 let possibly_update_opt env x (y, filter_opt) =
-  if OpamFilter.opt_eval_to_bool env filter_opt then x else y
+  if OpamFilter.opt_eval_to_bool env filter_opt then y else x
 
 let possibly_update x (y, filter) =
   possibly_update_opt x (y, Some filter)
 
-let nix_expression_path settings opam =
-  List.fold_left (possibly_update_opt (ident_env_opam opam)) "-" settings.SettingsFile.expression_path
-  |> OpamFilter.expand_string (ident_env_opam opam)
+let nix_expression_path attribute settings opam =
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  List.fold_left (possibly_update_opt env) "-" settings.SettingsFile.expression_path
+  |> OpamFilter.expand_string env
   |> OpamFilename.of_string
 
 let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
@@ -990,7 +994,7 @@ let nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam 
   let (src, extra_src, uses_zip) = nix_src_of_opam name version opam in
   let extra_files = match opam.extra_files with | None -> [] | Some xs -> xs in
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
-  let out_path = nix_expression_path settings opam in
+  let out_path = nix_expression_path attribute settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
   { pname = name; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
@@ -1176,7 +1180,7 @@ let nixify =
               let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
               prep_nix_of_opam ~refnames ~patches ~extra_depexts ~settings opam |> function
                 | `Generated nix_pkg ->
-                  Format.printf "%a@." pp_nix_pkg nix_pkg;
+                  OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, nix_pkg.out_path) :: xs)
             ) |> OpamStd.Option.default dlist
             in

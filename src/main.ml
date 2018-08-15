@@ -1273,6 +1273,16 @@ let nixify =
             true, dlist)
         (false, fun xs -> xs) files
     in
+    let opam_package = prep_nix_of_opam ~name:(OpamPackage.Name.of_string "opam") ~version:(OpamPackage.Version.of_string "IGNORE") ~refnames ~patches ~settings OpamFile.OPAM.empty in
+    let dlist = match opam_package with
+    | `Generated nix_pkg ->
+      (* the generated package is useless, just leave it out *)
+      dlist
+    | `Inherit (attr, expr) ->
+      (fun xs -> `Inherit (attr, expr) :: dlist xs)
+    | `Custom (attr, path) ->
+      (fun xs -> `CallPackage (attr, path_adjust path) :: dlist xs)
+    in
     (* if err then OpamStd.Sys.exit_because `False
            else *)
     match settings.world_path with

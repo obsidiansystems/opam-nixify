@@ -1273,7 +1273,7 @@ let nixify =
             true, dlist)
         (false, fun xs -> xs) files
     in
-    let opam_package = prep_nix_of_opam ~name:(OpamPackage.Name.of_string "opam") ~version:(OpamPackage.Version.of_string "IGNORE") ~refnames ~patches ~settings OpamFile.OPAM.empty in
+    let opam_package = prep_nix_of_opam ~name:(OpamPackage.Name.of_string "opam") ~version:(OpamPackage.Version.of_string OpamVersion.(to_string current)) ~refnames ~settings OpamFile.OPAM.empty in
     let dlist = match opam_package with
     | `Generated nix_pkg ->
       (* the generated package is useless, just leave it out *)

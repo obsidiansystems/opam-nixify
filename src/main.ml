@@ -848,8 +848,25 @@ let nix_expr_of_commands cmds = `NList (
       (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
       (nix_expr_of_args args)))
 
+let simple_env f fv = match OpamVariable.Full.scope fv with
+  | Package _ -> None
+  | _ -> f @@ OpamVariable.to_string (OpamVariable.Full.variable fv)
+
+let update x y = y
+
+let possibly_opt action env x (y, filter_opt) =
+  if OpamFilter.opt_eval_to_bool env filter_opt then action x y else x
+
+let possibly action env x (y, filter) =
+  possibly_opt action env x (y, Some filter)
+
+let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
+
 let nix_name ~refnames name =
-  OpamStd.Option.default name (OpamPackage.Name.Map.find_opt name refnames)
+  let env = simple_env (function | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name) | _ -> None) in
+  List.fold_left (possibly_opt update env) "%{name}%" refnames
+  |> OpamFilter.expand_string env
+  |> OpamPackage.Name.of_string
 
 let rec nixdeps_of_depends ~refnames depends = match depends with
   | Empty -> NixDeps.empty
@@ -956,10 +973,6 @@ let nix_src_of_opam opam =
     | Error e -> raise @@ Wat e
     | Ok srcs -> srcs (blankSrc, [], false)
 
-let simple_env f fv = match OpamVariable.Full.scope fv with
-  | Package _ -> None
-  | _ -> f @@ OpamVariable.to_string (OpamVariable.Full.variable fv)
-
 let ident_senv ?(other = OpamStd.Option.none) name version = function
   | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name)
   | "version" -> Some (OpamVariable.string @@ OpamPackage.Version.to_string version)
@@ -968,16 +981,6 @@ let ident_senv ?(other = OpamStd.Option.none) name version = function
 let ident_env ?other name variable = simple_env (ident_senv ?other name variable)
 
 let ident_env_opam ?other opam = ident_env ?other (OpamFile.OPAM.name opam) (OpamFile.OPAM.version opam)
-
-let update x y = y
-
-let possibly_opt action env x (y, filter_opt) =
-  if OpamFilter.opt_eval_to_bool env filter_opt then action x y else x
-
-let possibly action env x (y, filter) =
-  possibly_opt action env x (y, Some filter)
-
-let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
 
 let nix_expression_path attribute settings opam =
   let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
@@ -1014,9 +1017,10 @@ let extra_patches attribute settings opam =
     then None
     else Some (p, Some included))
 
-let nix_of_opam ~attribute ~refnames ~settings opam =
+let nix_of_opam ~attribute ~settings opam =
   let pname = OpamFile.OPAM.name opam in
   let version = OpamFile.OPAM.version opam in
+  let refnames = settings.SettingsFile.attribute_name in
   let deps = nixdeps_of_depends ~refnames (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
   let depopts = nixdeps_of_depopts ~refnames opam.depopts in
   let deps = NixDeps.union deps depopts in
@@ -1066,7 +1070,7 @@ let nix_of_opam ~attribute ~refnames ~settings opam =
   (* TODO handle metadata_dir *)
   { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
 
-let prep_nix_of_opam ?name ?version ~refnames ~settings opam =
+let prep_nix_of_opam ?name ?version ~settings opam =
   let name = match name with
   | Some x -> x
   | None -> OpamFile.OPAM.name opam in
@@ -1074,11 +1078,12 @@ let prep_nix_of_opam ?name ?version ~refnames ~settings opam =
   | Some x -> x
   | None -> OpamFile.OPAM.version opam in
   let opam = OpamFile.OPAM.with_name name @@ OpamFile.OPAM.with_version version opam in
+  let refnames = settings.SettingsFile.attribute_name in
   let attribute = nix_name ~refnames name in
   let open OpamStd.Option.Op in
   let answer = (custom_expression attribute settings opam >>| fun x () -> `Custom (attribute, x))
     ++ (inherit_source attribute settings opam >>| fun x () -> `Inherit (attribute, x))
-    +! (fun () -> `Generated (nix_of_opam ~attribute ~refnames ~settings opam))
+    +! (fun () -> `Generated (nix_of_opam ~attribute ~settings opam))
   in
   answer ()
 
@@ -1159,7 +1164,6 @@ let nixify =
   in
   let nixify global_options files package warnings_sel refnames patches depexts settings =
     OpamArg.apply_global_options global_options;
-    let refnames = OpamPackage.Name.Map.of_list refnames in
     let settings = match settings with
       | None -> SettingsFile.empty
       | Some (None) -> SettingsFile.read_from_channel ~filename:(OpamFile.make @@ OpamFilename.of_string "-") stdin
@@ -1168,6 +1172,7 @@ let nixify =
     let f_named n = FOp (FIdent([],OpamVariable.of_string "name",None),`Eq,FString (OpamPackage.Name.to_string n)) in
     let settings = {settings with depexts = List.fold_right (fun (pk,px) -> List.cons ([OpamPackage.Name.to_string px], f_named pk)) depexts settings.depexts} in
     let settings = {settings with patches = List.fold_right (fun (pk,pt) -> List.cons (OpamFilename.of_string pt, f_named pk)) patches settings.patches} in
+    let settings = {settings with attribute_name = settings.attribute_name @ List.map (fun (pk,pa) -> OpamPackage.Name.to_string pa, Some (f_named pk)) refnames} in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -1264,7 +1269,7 @@ let nixify =
                 (OpamFileTools.warns_to_string warnings);
             let dlist = opam |> OpamStd.Option.map (fun opam ->
               let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
-              prep_nix_of_opam ~refnames ~settings opam |> function
+              prep_nix_of_opam ~settings opam |> function
                 | `Generated nix_pkg ->
                   OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)
@@ -1283,7 +1288,7 @@ let nixify =
             true, dlist)
         (false, fun xs -> xs) files
     in
-    let opam_package = prep_nix_of_opam ~name:(OpamPackage.Name.of_string "opam") ~version:(OpamPackage.Version.of_string OpamVersion.(to_string current)) ~refnames ~settings OpamFile.OPAM.empty in
+    let opam_package = prep_nix_of_opam ~name:(OpamPackage.Name.of_string "opam") ~version:(OpamPackage.Version.of_string OpamVersion.(to_string current)) ~settings OpamFile.OPAM.empty in
     let dlist = match opam_package with
     | `Generated nix_pkg ->
       (* the generated package is useless, just leave it out *)

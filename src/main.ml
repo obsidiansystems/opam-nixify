@@ -971,17 +971,19 @@ let ident_env ?other name variable = simple_env (ident_senv ?other name variable
 
 let ident_env_opam ?other opam = ident_env ?other (OpamFile.OPAM.name opam) (OpamFile.OPAM.version opam)
 
-let possibly_update_opt env x (y, filter_opt) =
-  if OpamFilter.opt_eval_to_bool env filter_opt then y else x
+let update x y = y
 
-let possibly_update env x (y, filter) =
-  possibly_update_opt env x (y, Some filter)
+let possibly_opt action env x (y, filter_opt) =
+  if OpamFilter.opt_eval_to_bool env filter_opt then action x y else x
+
+let possibly action env x (y, filter) =
+  possibly_opt action env x (y, Some filter)
 
 let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
 
 let nix_expression_path attribute settings opam =
   let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
-  List.fold_left (possibly_update_opt env) "-" settings.SettingsFile.expression_path
+  List.fold_left (possibly_opt update env) "-" settings.SettingsFile.expression_path
   |> OpamFilter.expand_string env
   |> OpamFilename.of_string
 
@@ -989,13 +991,13 @@ let inherit_source attribute settings opam =
   let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
   settings.SettingsFile.inherited
   |> map_filtered_list OpamStd.Option.some
-  |> List.fold_left (possibly_update env) None
+  |> List.fold_left (possibly update env) None
 
 let custom_expression attribute settings opam =
   let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
   settings.SettingsFile.custom
   |> map_filtered_list OpamStd.Option.some
-  |> List.fold_left (possibly_update env) None
+  |> List.fold_left (possibly update env) None
   |> OpamStd.Option.map (OpamFilter.expand_string env)
   |> OpamStd.Option.map OpamFilename.of_string
 

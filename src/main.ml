@@ -1001,7 +1001,13 @@ let custom_expression attribute settings opam =
   |> OpamStd.Option.map (OpamFilter.expand_string env)
   |> OpamStd.Option.map OpamFilename.of_string
 
-let nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam =
+let extra_depexts attribute settings opam =
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  settings.SettingsFile.depexts
+  |> List.fold_left (possibly List.append env) []
+  |> List.map (OpamFilter.expand_string env)
+
+let nix_of_opam ~attribute ~refnames ~patches ~settings opam =
   let pname = OpamFile.OPAM.name opam in
   let version = OpamFile.OPAM.version opam in
   let deps = nixdeps_of_depends ~refnames (And (opam.depends, Atom (OpamPackage.Name.of_string "ocamlfind", Atom (Filter (FIdent ([],OpamVariable.of_string "build",None)))))) in
@@ -1026,8 +1032,9 @@ let nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam =
   (* TODO handle messages *)
   (* TODO handle post_messages *)
   (* TODO handle depexts *)
-  let extra_depexts = OpamStd.Option.map_default (fun x -> [x,FBool true]) [] @@
-    OpamPackage.Name.Map.find_opt pname extra_depexts
+  let extra_depexts = match extra_depexts attribute settings opam with
+  | [] -> []
+  | xs -> [xs, FBool true]
   in
   let depexts = nixdeps_of_depexts (opam.depexts @ extra_depexts) in
   let deps = NixDeps.union deps depexts in
@@ -1050,7 +1057,7 @@ let nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam =
   (* TODO handle metadata_dir *)
   { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
 
-let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings opam =
+let prep_nix_of_opam ?name ?version ~refnames ~patches ~settings opam =
   let name = match name with
   | Some x -> x
   | None -> OpamFile.OPAM.name opam in
@@ -1062,7 +1069,7 @@ let prep_nix_of_opam ?name ?version ~refnames ~patches ~extra_depexts ~settings 
   let open OpamStd.Option.Op in
   let answer = (custom_expression attribute settings opam >>| fun x () -> `Custom (attribute, x))
     ++ (inherit_source attribute settings opam >>| fun x () -> `Inherit (attribute, x))
-    +! (fun () -> `Generated (nix_of_opam ~attribute ~refnames ~patches ~extra_depexts ~settings opam))
+    +! (fun () -> `Generated (nix_of_opam ~attribute ~refnames ~patches ~settings opam))
   in
   answer ()
 
@@ -1141,16 +1148,16 @@ let nixify =
       "A settings file indicating what kind of output to generate."
       Arg.(some OpamArg.existing_filename_or_dash) None
   in
-  let nixify global_options files package warnings_sel refnames patches extra_depexts settings =
+  let nixify global_options files package warnings_sel refnames patches depexts settings =
     OpamArg.apply_global_options global_options;
     let refnames = OpamPackage.Name.Map.of_list refnames in
     let patches = OpamPackage.Name.Map.(List.fold_right (fun (pk,pt) -> update pk (List.cons (OpamFilename.Base.of_string pt, None)) []) patches empty) in
-    let extra_depexts = OpamPackage.Name.Map.(List.fold_right (fun (pk,px) -> update pk (List.cons (OpamPackage.Name.to_string px)) []) extra_depexts empty) in
     let settings = match settings with
       | None -> SettingsFile.empty
       | Some (None) -> SettingsFile.read_from_channel ~filename:(OpamFile.make @@ OpamFilename.of_string "-") stdin
       | Some (Some f) -> SettingsFile.read @@ OpamFile.make f
     in
+    let settings = {settings with depexts = List.fold_right (fun (pk,px) -> List.cons ([OpamPackage.Name.to_string px], FOp (FIdent([],OpamVariable.of_string "name",None),`Eq,FString (OpamPackage.Name.to_string pk)))) depexts settings.depexts} in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -1247,7 +1254,7 @@ let nixify =
                 (OpamFileTools.warns_to_string warnings);
             let dlist = opam |> OpamStd.Option.map (fun opam ->
               let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
-              prep_nix_of_opam ~refnames ~patches ~extra_depexts ~settings opam |> function
+              prep_nix_of_opam ~refnames ~patches ~settings opam |> function
                 | `Generated nix_pkg ->
                   OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)

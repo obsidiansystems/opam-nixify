@@ -622,7 +622,7 @@ let rerelativize_nix base path =
 let pp_nix_world ppf world =
   let open Format in
   pp_nix_args ppf [nix_arg "pkgs" None];
-  pp_print_text ppf "let mkWorld = overrides: with pkgs.lib; fix' (extends overrides (self: { callPackage = pkgs.newScope self })) in mkWorld (super: self: ";
+  pp_print_text ppf "let mkWorld = overrides: with pkgs.lib; fix' (extends overrides (self: { callPackage = pkgs.newScope self; })); in mkWorld (super: self: ";
   fprintf ppf "{@;<1 2>@[<hv>";
   world |> List.iter (function
     | `CallPackage (attr, path) ->
@@ -633,7 +633,7 @@ let pp_nix_world ppf world =
     | `Inherit (attr, expr) ->
         fprintf ppf "inherit (%s) %s;@ " expr
           (OpamPackage.Name.to_string attr));
-  fprintf ppf "@]}"
+  fprintf ppf "@]})"
 
 module SettingsSyntax = struct
 

@@ -121,9 +121,10 @@ type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_b
 type nix_bool = [`NTrue | `NFalse | vnix_bool]
 *)
 
+type nix_relop = [ `Geq | `Gt | `Leq | `Lt ]
 type nix_type = [`NTBool | `NTStr | `NTList of nix_type | `NTSet | `NTPath | `NTFun ]
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr) | `NTy of (nix_type * nix_expr)]
-type nix_const = [`NTrue | `NFalse | `NStr of string | `NNull]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NOrd of (nix_relop * nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NInt of int | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr) | `NTy of (nix_type * nix_expr)]
+type nix_const = [`NTrue | `NFalse | `NStr of string | `NInt of int | `NNull]
 
 type nix_pkg = {
   pname: OpamPackage.Name.t;
@@ -139,6 +140,7 @@ type nix_pkg = {
   extra_src: (OpamTypes.basename * nix_expr) list;
   uses_zip: bool;
   out_path: OpamFilename.t;
+  tagalongs: OpamFilename.t list;
   raw_opam: OpamFile.OPAM.t option;
 }
 
@@ -180,13 +182,17 @@ let nix_if c t e = match c with
 let nix_var (v : string) = `NVar v
 let nix_null = `NNull
 let nix_str (s : string) = `NStr s
+let nix_int (i : int) = `NInt i
 let nix_eq l r = match l, r with
   | `NTrue, `NTrue -> `NTrue
   | `NFalse, `NFalse -> `NTrue
   | `NStr x, `NStr y -> if x = y then `NTrue else `NFalse
+  | `NInt x, `NInt y -> if x = y then `NTrue else `NFalse
+  | `NNull, `NNull -> `NTrue
   | #nix_const, #nix_const -> `NFalse
   | _, _ -> `NEq (l,r)
 let nix_neq l r = nix_not (nix_eq l r)
+let nix_ord o l r = `NOrd (o,l,r)
 let nix_list vs = `NList vs
 let nix_is_bool x = match x with
   | `NTrue | `NFalse | `NNot _ | `NAnd (_,_) | `NOr (_,_) | `NImpl (_,_) | `NEq (_,_) | `NNeq (_,_) | `NTy (`NTBool,_) -> `NTrue
@@ -221,6 +227,10 @@ let nix_attr x a = `NAttr (x,a)
 let nix_stdlib = nix_attr @@ nix_attr (nix_var "stdenv") "lib"
 let nix_stdcall f = nix_ap @@ nix_stdlib f
 let nix_stdcall2 f x = nix_ap @@ nix_stdcall f x
+let nix_mcall v f = nix_ap @@ nix_attr (nix_var v) f
+let nix_mcall2 v f x = nix_ap @@ nix_mcall v f x
+let nix_vcall f = nix_ap @@ nix_var f
+let nix_vcall2 f x = nix_ap @@ nix_vcall f x
 let nix_typed t x = `NTy (t,x)
 let rec nix_append_lists = function
   | `NList [] -> fun y -> y
@@ -308,8 +318,7 @@ let nix_bool_of_formula nix_bool_of_atom =
   in
   go
 
-let nix_ver_cmp op v1 v2 =
-  `NAp (`NAp (`NAttr (`NAttr ((`NVar "stdenv"), "lib"), op), v1), v2)
+let nix_ver_cmp = nix_vcall2 "vcompare"
 
 let nix_optionals_opt b l = match b with
   | `NTrue -> Some l
@@ -329,10 +338,7 @@ let nix_bool_of_constraint pkg (relop, ver) =
   match relop with
   | `Eq -> nix_eq pkg_ver chk_ver
   | `Neq -> nix_neq pkg_ver chk_ver
-  | `Geq -> nix_ver_cmp "versionAtLeast" pkg_ver chk_ver
-  | `Gt -> nix_ver_cmp "versionOlder" chk_ver pkg_ver
-  | `Leq -> nix_ver_cmp "versionAtLeast" chk_ver pkg_ver
-  | `Lt -> nix_ver_cmp "versionOlder" pkg_ver chk_ver
+  | #nix_relop as op -> nix_ord op (nix_ver_cmp (nix_var @@ argname_of_pkgname pkg) chk_ver) (nix_int 0)
 
 let rec pp_nix_expr_prec prec ppf nb =
   let open Format in
@@ -411,9 +417,23 @@ let rec pp_nix_expr_prec prec ppf nb =
       pp_print_text ppf " != ";
       pp_nix_expr_prec `PEq ppf r;
       if paren then pp_print_text ppf ")" else ()
+  | `NOrd (o,l,r) ->
+      let paren = match prec with
+        | `PElse | `PImpl | `POr | `PAnd | `PEq -> false
+        | _ -> true
+      in
+      if paren then pp_print_text ppf "(" else ();
+      pp_nix_expr_prec `POrd ppf l;
+      (match o with
+      | `Geq -> pp_print_text ppf " >= "
+      | `Gt -> pp_print_text ppf " > "
+      | `Leq -> pp_print_text ppf " <= "
+      | `Lt -> pp_print_text ppf " < ");
+      pp_nix_expr_prec `POrd ppf r;
+      if paren then pp_print_text ppf ")" else ()
   | `NAttr (l,a) ->
       let paren = match prec with
-        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAppend | `PAp | `PAttr -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `POrd | `PNot | `PAppend | `PAp | `PAttr -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -423,7 +443,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       if paren then pp_print_text ppf ")" else ()
   | `NAppend (x,y) ->
       let paren = match prec with
-        | `PElse | `PImpl | `POr | `PAnd | `PEq | `PNot | `PAppend -> false
+        | `PElse | `PImpl | `POr | `PAnd | `PEq | `POrd | `PNot | `PAppend -> false
         | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
@@ -431,6 +451,7 @@ let rec pp_nix_expr_prec prec ppf nb =
       pp_print_text ppf " ++ ";
       pp_nix_expr_prec `PAppend ppf y;
       if paren then pp_print_text ppf ")" else ()
+  | `NInt i -> fprintf ppf "%d" i
   | `NStr s ->
       fprintf ppf "@[<h>\"%s\"@]" @@ nix_escape s
   | `NStrI pieces -> fprintf ppf "@[<h>\"%a\"@]" pp_nix_str pieces
@@ -499,6 +520,7 @@ let pp_nix_pkg ppf nix_pkg =
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
   pp_nix_args ppf ((if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
+  fprintf ppf "let vcompare = stdenv.lib.versioning.debian.version.compare; in@ ";
   nix_pkg.deps |> NixDeps.iter (fun name { ever_required; filtered_constraints; _ } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
       let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if ever_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
@@ -1044,7 +1066,7 @@ let nix_of_opam ~attribute ~settings opam =
   (* TODO handle features *)
   (* TODO handle messages *)
   (* TODO handle post_messages *)
-  (* TODO handle depexts *)
+  (* TODO handle depexts with non-constant conditions *)
   let extra_depexts = match extra_depexts attribute settings opam with
   | [] -> []
   | xs -> [xs, FBool true]
@@ -1068,7 +1090,8 @@ let nix_of_opam ~attribute ~settings opam =
   let out_path = nix_expression_path attribute settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
-  { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; raw_opam = Some opam }
+  let tagalongs = List.map (fun (f,_,_) -> f) (OpamFile.OPAM.get_extra_files opam) @ List.map fst extra_patches in
+  { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; tagalongs; raw_opam = Some opam }
 
 let prep_nix_of_opam ?name ?version ~settings opam =
   let name = match name with
@@ -1272,6 +1295,8 @@ let nixify =
               prep_nix_of_opam ~settings opam |> function
                 | `Generated nix_pkg ->
                   OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
+                  let dst = OpamFilename.dirname nix_pkg.out_path in
+                  nix_pkg.tagalongs |> List.iter (fun src -> OpamFilename.copy_in src dst);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)
                 | `Inherit (attr, expr) ->
                   (fun xs -> dlist @@ `Inherit (attr, expr) :: xs)

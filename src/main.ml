@@ -936,6 +936,245 @@ let is_zip_archive f =
     | _ -> false
   with Sys_error _ | End_of_file -> false
 
+let cache_url root_cache_url checksum =
+  List.fold_left OpamUrl.Op.(/) root_cache_url
+    (OpamHash.to_path checksum)
+
+let url_backend url = OpamRepository.find_backend_by_kind url.OpamUrl.backend
+
+let validate_and_add_to_cache label url cache_dir file checksums =
+  try
+    let mismatch, expected =
+      OpamStd.List.find_map (fun c ->
+          match OpamHash.mismatch (OpamFilename.to_string file) c with
+          | Some found -> Some (found, c)
+          | None -> None)
+        checksums
+    in
+    OpamConsole.error "%s: Checksum mismatch for %s:\n\
+                      \  expected %s\n\
+                      \  got      %s"
+      label (OpamUrl.to_string url)
+      (OpamHash.to_string expected)
+      (OpamHash.to_string mismatch);
+    OpamFilename.remove file;
+    false
+  with Not_found ->
+    (match cache_dir, checksums with
+     | Some dir, ck::_ ->
+       OpamFilename.copy ~src:file ~dst:(OpamRepository.cache_file dir ck)
+       (* idea: hardlink to the other checksums? *)
+     | _ -> ());
+    true
+
+let pull_from_upstream
+    label ?(working_dir=false) cache_dir destdir checksums url =
+  let open OpamProcess.Job.Op in
+  let module B = (val url_backend url: OpamRepositoryBackend.S) in
+  let cksum = match checksums with [] -> None | c::_ -> Some c in
+  let text =
+    OpamProcess.make_command_text label
+      (OpamUrl.string_of_backend url.OpamUrl.backend)
+  in
+  OpamProcess.Job.with_text text @@
+  (if working_dir then B.sync_dirty destdir url
+   else
+   let pin_cache_dir = OpamRepositoryPath.pin_cache url in
+   let url, pull =
+     if OpamFilename.exists_dir pin_cache_dir then
+       (OpamConsole.log "REPOSITORY" "Pin cache existing for %s : %s\n"
+          (OpamUrl.to_string url) @@ OpamFilename.Dir.to_string pin_cache_dir;
+        let rsync =
+          OpamUrl.parse ~backend:`rsync
+          @@ OpamFilename.Dir.to_string pin_cache_dir
+        in
+        let pull =
+          let module BR = (val url_backend rsync: OpamRepositoryBackend.S) in
+          BR.pull_url
+        in
+        rsync, pull
+       )
+     else url, B.pull_url
+   in
+   pull ?cache_dir destdir cksum url
+  )
+  @@| function
+  | (Result (Some file) | Up_to_date (Some file)) as ret ->
+    if validate_and_add_to_cache label url cache_dir file checksums then
+      (OpamConsole.msg "[%s] %s from %s\n"
+         (OpamConsole.colorise `green label)
+         (match ret with Up_to_date _ -> "no changes" | _ -> "downloaded")
+         (OpamUrl.to_string url);
+       ret)
+    else
+      Not_available (None, "Checksum mismatch")
+  | (Result None | Up_to_date None) as ret ->
+    if checksums = [] then
+      (OpamConsole.msg "[%s] %s from %s\n"
+         (OpamConsole.colorise `green label)
+         (match ret with Up_to_date _ -> "no changes" | _ -> "synchronised")
+         (OpamUrl.to_string url);
+       ret)
+    else
+      (OpamConsole.error "%s: file checksum specified, but a directory was \
+                          retrieved from %s"
+         label (OpamUrl.to_string url);
+       OpamFilename.rmdir destdir;
+       Not_available (None, "can't check directory checksum"))
+  | Not_available _ as na -> na
+
+let rec pull_from_mirrors label ?working_dir cache_dir destdir checksums = function
+  | [] -> invalid_arg "pull_from_mirrors: empty mirror list"
+  | [url] ->
+    pull_from_upstream label ?working_dir cache_dir destdir checksums url
+  | url::mirrors ->
+    let open OpamProcess.Job.Op in
+    pull_from_upstream label ?working_dir cache_dir destdir checksums url
+    @@+ function
+    | Not_available (_,s) ->
+      OpamConsole.warning "%s: download of %s failed (%s), trying mirror"
+        label (OpamUrl.to_string url) s;
+      pull_from_mirrors label cache_dir destdir checksums mirrors
+    | r -> Done r
+
+let fetch_from_cache =
+  let open OpamProcess.Job.Op in
+  let currently_downloading = ref [] in
+  let rec no_concurrent_dls key f x =
+    if List.mem key !currently_downloading then
+      Run (OpamProcess.command "sleep" ["1"],
+           (fun _ -> no_concurrent_dls key f x))
+    else
+      (currently_downloading := key :: !currently_downloading;
+       OpamProcess.Job.finally
+         (fun () ->
+            currently_downloading :=
+              List.filter (fun k -> k <> key) !currently_downloading)
+         (fun () -> f x))
+  in
+  fun cache_dir cache_urls checksums ->
+  let mismatch file =
+    OpamConsole.error
+      "Conflicting file hashes, or broken or compromised cache!\n%s"
+      (OpamStd.Format.itemize (fun ck ->
+           OpamHash.to_string ck ^
+           if OpamHash.check_file (OpamFilename.to_string file) ck
+           then OpamConsole.colorise `green " (match)"
+           else OpamConsole.colorise `red " (MISMATCH)")
+          checksums);
+    OpamFilename.remove file;
+    Done (Not_available (None, "cache CONFLICT"))
+  in
+  let dl_from_cache_job root_cache_url checksum file =
+    let url = cache_url root_cache_url checksum in
+    match url.OpamUrl.backend with
+    | `http ->
+      OpamDownload.download_as
+        ~quiet:true ~validate:false ~overwrite:true ~checksum
+        url file
+    | `rsync ->
+      (OpamLocal.rsync_file url file @@| function
+        | Result _ | Up_to_date _-> ()
+        | Not_available (_,m) -> failwith m)
+    | #OpamUrl.version_control ->
+      failwith "Version control not allowed as cache URL"
+  in
+  try
+    let hit_checksum, hit_file =
+      OpamStd.List.find_map (fun ck ->
+          let f = OpamRepository.cache_file cache_dir ck in
+          if OpamFilename.exists f then Some (ck, f) else None)
+        checksums
+    in
+    if List.for_all
+        (fun ck -> ck = hit_checksum ||
+                   OpamHash.check_file (OpamFilename.to_string hit_file) ck)
+        checksums
+    then Done (Up_to_date (hit_file, OpamUrl.empty))
+    else mismatch hit_file
+  with Not_found -> match checksums with
+    | [] -> Done (Not_available (None, "cache miss"))
+    | checksum::_ ->
+      (* Try all cache urls in order, but only the first checksum *)
+      let local_file = OpamRepository.cache_file cache_dir checksum in
+      let tmpfile = OpamFilename.add_extension local_file "tmp" in
+      let rec try_cache_dl = function
+        | [] -> Done (Not_available (None, "cache miss"))
+        | root_cache_url::other_caches ->
+          OpamProcess.Job.catch
+            (function Failure _ -> try_cache_dl other_caches
+                    | e -> raise e)
+          @@ fun () ->
+          dl_from_cache_job root_cache_url checksum tmpfile
+          @@+ fun () ->
+          if List.for_all (OpamHash.check_file (OpamFilename.to_string tmpfile))
+              checksums
+          then
+            (OpamFilename.move ~src:tmpfile ~dst:local_file;
+             Done (Result (local_file, root_cache_url)))
+          else mismatch tmpfile
+      in
+      no_concurrent_dls checksum try_cache_dl cache_urls
+
+let borrow_file
+    label ?cache_dir ?(cache_urls=[]) ?working_dir
+    local_dirname checksums remote_urls =
+  let open OpamProcess.Job.Op in
+  (match cache_dir with
+   | Some cache_dir ->
+     let text = OpamProcess.make_command_text label "dl" in
+     OpamProcess.Job.with_text text @@
+     fetch_from_cache cache_dir cache_urls checksums
+   | None ->
+     assert (cache_urls = []);
+     Done (Not_available (None, "no cache")))
+  @@+ function
+  | Up_to_date (archive, _url) ->
+    OpamConsole.msg "[%s] found in cache\n"
+      (OpamConsole.colorise `green label);
+    Done (Up_to_date (OpamFilename.F archive))
+  | Result (archive, url) ->
+    OpamConsole.msg "[%s] %s\n"
+      (OpamConsole.colorise `green label)
+      (match url.OpamUrl.backend with
+       | `http -> "downloaded from cache at "^OpamUrl.to_string url
+       | `rsync -> "found in external cache at "^url.OpamUrl.path
+       | _ -> "found in external cache "^OpamUrl.to_string url);
+    Done (Result (OpamFilename.F archive))
+  | Not_available _ ->
+    if checksums = [] && OpamRepositoryConfig.(!r.force_checksums = Some true)
+    then
+      OpamConsole.error_and_exit `File_error
+        "%s: Missing checksum, and `--require-checksums` was set."
+        label;
+    pull_from_mirrors label ?working_dir cache_dir local_dirname checksums
+      remote_urls
+    @@+ function
+    | Up_to_date None -> Done (Up_to_date (OpamFilename.D local_dirname))
+    | Result None -> Done (Result (OpamFilename.D local_dirname))
+    | Up_to_date (Some archive) -> Done (Up_to_date (OpamFilename.F archive))
+    | Result (Some archive) -> Done (Result (OpamFilename.F archive))
+    | Not_available _ as na -> Done na
+
+let pull_file_to_cache label ~cache_dir ?(cache_urls=[]) checksums remote_urls =
+  let open OpamProcess.Job.Op in
+  let text = OpamProcess.make_command_text label "dl" in
+  OpamProcess.Job.with_text text @@
+  fetch_from_cache cache_dir cache_urls checksums @@+ function
+  | Up_to_date _ -> Done (Up_to_date ())
+  | Result (_, url) ->
+    OpamConsole.msg "[%s] downloaded from %s\n"
+      (OpamConsole.colorise `green label)
+      (OpamUrl.to_string url);
+    Done (Result ())
+  | Not_available _ ->
+    OpamFilename.with_tmp_dir_job (fun tmpdir ->
+        pull_from_mirrors label (Some cache_dir) tmpdir checksums remote_urls
+        @@| function
+        | Up_to_date _ -> assert false
+        | Result (Some _) -> Result ()
+        | Result None -> Not_available (None, "is a directory")
+        | Not_available _ as na -> na)
 
 let nix_src_of_opam opam =
   let name = OpamFile.OPAM.name opam in
@@ -947,38 +1186,32 @@ let nix_src_of_opam opam =
   let cache_dir = OpamRepositoryPath.download_cache st.switch_global.root in
   let cache_urls = active_caches st nv in
 
-  let fetch_source_job =
+  let fetch_source_job tmpdir =
     match OpamFile.OPAM.url opam with
     | None   -> Done (Ok None)
     | Some u ->
-      OpamRepository.pull_file_to_cache (OpamPackage.to_string nv)
-        ~cache_dir ~cache_urls
+      borrow_file (OpamPackage.to_string nv)
+        ~cache_dir ~cache_urls tmpdir
         (OpamFile.URL.checksum u)
         (OpamFile.URL.url u :: OpamFile.URL.mirrors u)
       @@| function
-        | Not_available (_,na) -> Error na
-        | _ -> Ok (Some (OpamFile.URL.url u, None, OpamRepository.cache_file cache_dir (List.hd (OpamFile.URL.checksum u))))
+        | Not_available (_,na) -> Error (Printf.sprintf "failed to cache '%s': %s" (OpamUrl.to_string (OpamFile.URL.url u)) na)
+        | Result x | Up_to_date x -> Ok (Some (OpamFile.URL.url u, None, x))
 
   in
-  let fetch_extra_source_job (name, u) =
-    OpamRepository.pull_file_to_cache
+  let fetch_extra_source_job (name, u) tmpdir =
+    borrow_file
       (OpamPackage.to_string nv ^"/"^ OpamFilename.Base.to_string name)
-      ~cache_dir ~cache_urls
+      ~cache_dir ~cache_urls tmpdir
       (OpamFile.URL.checksum u)
       (OpamFile.URL.url u :: OpamFile.URL.mirrors u)
     @@| function
-      | Not_available (_,na) -> Error na
-      | _ -> Ok (Some (OpamFile.URL.url u, Some name, OpamRepository.cache_file cache_dir (List.hd (OpamFile.URL.checksum u))))
+      | Not_available (_,na) -> Error (Printf.sprintf "failed to cache '%s': %s" (OpamUrl.to_string (OpamFile.URL.url u)) na)
+      | Result x | Up_to_date x -> Ok (Some (OpamFile.URL.url u, Some name, x))
   in
-  let jobs = fetch_source_job :: List.map fetch_extra_source_job (OpamFile.OPAM.extra_sources opam) in
-  let jobs = jobs |> List.map (fun dl ->
-    function
-      | Error e -> Done (Error e)
-      | Ok rs -> dl @@+ (function
-        | Error e -> Done (Error e)
-        | Ok None -> Done (Ok rs)
-        | Ok (Some (url, name, file)) ->
-          OpamSystem.make_command "nix-hash" ["--type"; "sha256"; "--base32"; "--flat"; OpamFilename.to_string file] @@> (fun result ->
+  let hash_job rs url name = function
+    | OpamFilename.F file ->
+        OpamSystem.make_command "nix-hash" ["--type"; "sha256"; "--base32"; "--flat"; OpamFilename.to_string file] @@> (fun result ->
             OpamProcess.cleanup ~force:true result;
             if OpamProcess.is_success result then
               let is_zip = is_zip_archive (OpamFilename.to_string file) in
@@ -987,7 +1220,28 @@ let nix_src_of_opam opam =
               | None -> Done (Ok (fun (_, xs, uses_zip) -> rs @@ (fetch, xs, uses_zip || is_zip)))
               | Some name -> Done (Ok (fun (src, xs, uses_zip) -> rs @@ (src, (name, fetch) :: xs, uses_zip || is_zip)))
             else
-              Done (Error "SHA256 computation failed"))))
+              Done (Error "SHA256 computation failed")
+      )
+    | OpamFilename.D dir ->
+        OpamSystem.make_command "nix-hash" ["--type"; "sha256"; "--base32"; OpamFilename.Dir.to_string dir] @@> (fun result ->
+            OpamProcess.cleanup ~force:true result;
+            if OpamProcess.is_success result then
+              let fetch = `NAp (nix_var "fetchurl", `NSet ["url", `NStr (OpamUrl.to_string url); "sha256", `NStr (List.hd @@ result.r_stdout)]) in
+              match name with
+              | None -> Done (Ok (fun (_, xs, uses_zip) -> rs @@ (fetch, xs, uses_zip)))
+              | Some name -> Done (Ok (fun (src, xs, uses_zip) -> rs @@ (src, (name, fetch) :: xs, uses_zip)))
+            else
+              Done (Error "SHA256 computation failed")
+      )
+  in
+  let jobs = fetch_source_job :: List.map fetch_extra_source_job (OpamFile.OPAM.extra_sources opam) in
+  let jobs = jobs |> List.map (fun dl ->
+    function
+      | Error e -> Done (Error e)
+      | Ok rs -> OpamFilename.with_tmp_dir_job (fun tmpdir -> dl tmpdir @@+ (function
+        | Error e -> Done (Error e)
+        | Ok None -> Done (Ok rs)
+        | Ok (Some (url, name, file)) -> hash_job rs url name file)))
   in
   let blankSrc = `NStr "/var/empty" in
   let r = OpamProcess.Job.run @@ OpamProcess.Job.seq jobs (Ok (fun xs -> xs))

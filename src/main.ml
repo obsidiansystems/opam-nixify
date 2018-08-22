@@ -662,6 +662,7 @@ module SettingsSyntax = struct
     (* Alterations to package metadata *)
     patches : (OpamFilename.t * filter) list;
     depexts : (string list * filter) list;
+    refuse : (OpamPackage.Name.t * filter option) list;
   }
 
   let empty = {
@@ -679,6 +680,7 @@ module SettingsSyntax = struct
 
     patches = [];
     depexts = [];
+    refuse = [];
   }
 
   (* Getters *)
@@ -693,6 +695,7 @@ module SettingsSyntax = struct
   let expression_path t = t.expression_path
   let patches t = t.patches
   let depexts t = t.depexts
+  let refuse t = t.refuse
 
   (* Setters *)
   let with_opam_version opam_version t = { t with opam_version }
@@ -706,6 +709,7 @@ module SettingsSyntax = struct
   let with_expression_path expression_path t = { t with expression_path }
   let with_patches patches t = { t with patches }
   let with_depexts depexts t = { t with depexts }
+  let with_refuse refuse t = { t with refuse }
 
   (* Field parser-printers *)
 
@@ -746,6 +750,8 @@ module SettingsSyntax = struct
       V.(map_list @@ map_option (string -| Pp.of_module "filename" (module OpamFilename)) filter);
     "depexts", Pp.ppacc with_depexts depexts @@
       V.(map_list @@ map_option (map_list string) filter);
+    "refuse", Pp.ppacc with_refuse refuse @@
+      V.(map_list @@ map_option (string -| Pp.of_module "package-name" (module OpamPackage.Name)) (Pp.opt filter));
   ]
 
   let pp =

@@ -13,9 +13,9 @@ build: [
   ["jbuilder" "build" "-p" "opam-nixify" "-j" jobs ]
 ]
 depends: [
-  "opam-state" {= "2.0.0~rc3"}
-  "opam-solver" {= "2.0.0~rc3"}
-  "opam-client" {= "2.0.0~rc3"}
+  "opam-state" {= "2.0.0"}
+  "opam-solver" {= "2.0.0"}
+  "opam-client" {= "2.0.0"}
   "re" {>= "1.7.2"}
   "cmdliner" {>= "0.9.8"}
   "jbuilder" {build & >= "1.0+beta20"}

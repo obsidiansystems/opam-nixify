@@ -662,7 +662,7 @@ module SettingsSyntax = struct
     (* Alterations to package metadata *)
     patches : (OpamFilename.t * filter) list;
     depexts : (string list * filter) list;
-    refuse : (OpamPackage.Name.t * filter option) list;
+    refuse : filter option OpamPackage.Name.Map.t;
   }
 
   let empty = {
@@ -680,7 +680,7 @@ module SettingsSyntax = struct
 
     patches = [];
     depexts = [];
-    refuse = [];
+    refuse = OpamPackage.Name.Map.empty;
   }
 
   (* Getters *)
@@ -727,6 +727,8 @@ module SettingsSyntax = struct
             | _ -> Pp.unexpected ())
           | _ -> Pp.unexpected ())
 
+  let pp_package_map = OpamPp.pp (fun ~pos:_ -> OpamPackage.Name.Map.of_list) OpamPackage.Name.Map.bindings
+
   let fields = [
     "opam-version", Pp.ppacc with_opam_version opam_version @@
       V.string -| Pp.of_module "opam-version" (module OpamVersion);
@@ -751,7 +753,7 @@ module SettingsSyntax = struct
     "depexts", Pp.ppacc with_depexts depexts @@
       V.(map_list @@ map_option (map_list string) filter);
     "refuse", Pp.ppacc with_refuse refuse @@
-      V.(map_list @@ map_option (string -| Pp.of_module "package-name" (module OpamPackage.Name)) (Pp.opt filter));
+      V.(map_list @@ map_option (string -| Pp.of_module "package-name" (module OpamPackage.Name)) (Pp.opt filter)) -| pp_package_map;
   ]
 
   let pp =

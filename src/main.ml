@@ -60,6 +60,40 @@ let main_catch_all f =
     in
     exit exit_code
 
+module type DList = sig
+  type 'a t
+
+  val empty: 'a t
+  val append: 'a t -> 'a t -> 'a t
+  val only: 'a -> 'a t
+  val cons: 'a -> 'a t -> 'a t
+  val snoc: 'a t -> 'a -> 'a t
+  val to_list: 'a t -> 'a list
+  val append_onto: 'a t -> 'a list -> 'a list
+
+  module Op: sig
+    val (@) : 'a t -> 'a t -> 'a t
+    (* val (::) : 'a -> 'a t -> 'a t *)
+  end
+end
+
+module DList: DList = struct
+  type 'a t = 'a list -> 'a list
+
+  let empty xs = xs
+  let append xs ys zs = xs @@ ys zs
+  let only x xs = x :: xs
+  let cons x xs ys = x :: xs ys
+  let snoc xs x ys = xs @@ x :: ys
+  let to_list xs = xs []
+  let append_onto xs ys = xs ys
+
+  module Op = struct
+    let (@) = append
+    (* let (::) = cons *)
+  end
+end
+
 let run command =
   OpamStd.Option.iter OpamVersion.set_git OpamGitVersion.version;
   OpamSystem.init ();

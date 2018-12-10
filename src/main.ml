@@ -173,6 +173,7 @@ type nix_pkg = {
   src: nix_expr;
   extra_src: (OpamTypes.basename * nix_expr) list;
   uses_zip: bool;
+  uses_runCommand: bool;
   out_path: OpamFilename.t;
   tagalongs: OpamFilename.t list;
   raw_opam: OpamFile.OPAM.t option;
@@ -265,6 +266,7 @@ let nix_mcall v f = nix_ap @@ nix_attr (nix_var v) f
 let nix_mcall2 v f x = nix_ap @@ nix_mcall v f x
 let nix_vcall f = nix_ap @@ nix_var f
 let nix_vcall2 f x = nix_ap @@ nix_vcall f x
+let nix_vcall3 f x y = nix_ap @@ nix_vcall2 f x y
 let nix_typed t x = `NTy (t,x)
 let rec nix_append_lists = function
   | `NList [] -> fun y -> y
@@ -553,7 +555,7 @@ let pp_nix_pkg ppf nix_pkg =
       fprintf ppf "/*@[";
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
-  pp_nix_args ppf ((if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
+  pp_nix_args ppf ((if nix_pkg.uses_runCommand then [nix_arg "runCommand" None] else []) @ (if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
   fprintf ppf "let vcompare = stdenv.lib.versioning.debian.version.compare; in@ ";
   nix_pkg.deps |> NixDeps.iter (fun name { ever_required; filtered_constraints; _ } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
@@ -1259,8 +1261,8 @@ let nix_src_of_opam opam =
               let is_zip = is_zip_archive (OpamFilename.to_string file) in
               let fetch = `NAp (nix_var "fetchurl", `NSet ["url", `NStr (OpamUrl.to_string url); "sha256", `NStr (List.hd @@ result.r_stdout)]) in
               match name with
-              | None -> Done (Ok (fun (_, xs, uses_zip) -> rs @@ (fetch, xs, uses_zip || is_zip)))
-              | Some name -> Done (Ok (fun (src, xs, uses_zip) -> rs @@ (src, (name, fetch) :: xs, uses_zip || is_zip)))
+              | None -> Done (Ok (fun (_, xs, uses_zip, _uses_runCommand) -> rs @@ (fetch, xs, uses_zip || is_zip, false)))
+              | Some name -> Done (Ok (fun (src, xs, uses_zip, uses_runCommand) -> rs @@ (src, (name, fetch) :: xs, uses_zip || is_zip, uses_runCommand)))
             else
               Done (Error "SHA256 computation failed")
       )
@@ -1270,8 +1272,8 @@ let nix_src_of_opam opam =
             if OpamProcess.is_success result then
               let fetch = `NAp (nix_var "fetchurl", `NSet ["url", `NStr (OpamUrl.to_string url); "sha256", `NStr (List.hd @@ result.r_stdout)]) in
               match name with
-              | None -> Done (Ok (fun (_, xs, uses_zip) -> rs @@ (fetch, xs, uses_zip)))
-              | Some name -> Done (Ok (fun (src, xs, uses_zip) -> rs @@ (src, (name, fetch) :: xs, uses_zip)))
+              | None -> Done (Ok (fun (_, xs, uses_zip, _uses_runCommand) -> rs @@ (fetch, xs, uses_zip, false)))
+              | Some name -> Done (Ok (fun (src, xs, uses_zip, uses_runCommand) -> rs @@ (src, (name, fetch) :: xs, uses_zip, uses_runCommand)))
             else
               Done (Error "SHA256 computation failed")
       )
@@ -1285,11 +1287,11 @@ let nix_src_of_opam opam =
         | Ok None -> Done (Ok rs)
         | Ok (Some (url, name, file)) -> hash_job rs url name file)))
   in
-  let blankSrc = `NStr "/var/empty" in
+  let blankSrc = nix_vcall3 "runCommand" (nix_str "empty") (`NSet ["outputHashMode", nix_str "recursive"; "outputHashAlgo", nix_str "sha256"; "outputHash", nix_str "0sjjj9z1dhilhpc8pq4154czrb79z9cm044jvn75kxcjv6v5l2m5"]) (nix_str "mkdir $out") in
   let r = OpamProcess.Job.run @@ OpamProcess.Job.seq jobs (Ok (fun xs -> xs))
   in match r with
     | Error e -> raise @@ Wat e
-    | Ok srcs -> srcs (blankSrc, [], false)
+    | Ok srcs -> srcs (blankSrc, [], false, true)
 
 let ident_senv ?(other = OpamStd.Option.none) name version = function
   | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name)
@@ -1380,14 +1382,14 @@ let nix_of_opam ~attribute ~settings opam =
   (* TODO handle doc *)
   (* TODO handle bug_reports *)
   (* TODO handle extensions *)
-  let (src, extra_src, uses_zip) = nix_src_of_opam opam in
+  let (src, extra_src, uses_zip, uses_runCommand) = nix_src_of_opam opam in
   let extra_files = match opam.extra_files with | None -> [] | Some xs -> xs in
   let extra_src = extra_src @ List.map (fun (b,_) -> (b, nix_path @@ OpamFilename.Base.to_string b)) extra_files in
   let out_path = nix_expression_path attribute settings opam in
   (* TODO handle descr *)
   (* TODO handle metadata_dir *)
   let tagalongs = List.map (fun (f,_,_) -> f) (OpamFile.OPAM.get_extra_files opam) @ List.map fst extra_patches in
-  { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; out_path; tagalongs; raw_opam = Some opam }
+  { pname; version; attribute; deps; prop_deps = deps; conflicts; build; install; patches; src; extra_src; uses_zip; uses_runCommand; out_path; tagalongs; raw_opam = Some opam }
 
 let prep_nix_of_opam ?name ?version ~settings opam =
   let name = match name with

@@ -626,6 +626,8 @@ let pp_nix_pkg ppf nix_pkg =
     pp_nix_expr ppf nix_pkg.patches;
     fprintf ppf ";@ "
   );
+  fprintf ppf "postPatch = \"patchShebangs .\"";
+  fprintf ppf ";@ ";
   fprintf ppf "buildPhase = stdenv.lib.concatMapStringsSep \"\\n\" (stdenv.lib.concatStringsSep \" \")@ ";
   pp_nix_expr ppf nix_pkg.build;
   fprintf ppf ";@ ";

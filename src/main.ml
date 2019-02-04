@@ -315,9 +315,11 @@ let rec resolve_ident = function
   | [],"version" -> nix_typed `NTStr @@ nix_var "version"
   | [],"jobs" -> nix_str "1"
   | [],"make" -> nix_str "make"
+  | ["_"],"lib" -> nix_str_append (nix_str "$OCAMLFIND_DESTDIR/") @@ nix_typed `NTStr @@ nix_var "pname"
   | [],"lib" -> nix_str "$OCAMLFIND_DESTDIR"
   | [],"bin" -> nix_str "$out/bin"
   | [],"man" -> nix_str "$out/man"
+  | ["_"],"doc" -> nix_str_append (nix_str "$out/share/doc/") @@ nix_typed `NTStr @@ nix_var "pname"
   | [],"doc" -> nix_str "$out/share/doc"
   | [],"prefix" -> nix_str "$out"
   | [],"pinned" -> nix_false
@@ -325,8 +327,10 @@ let rec resolve_ident = function
   | [],"post" -> raise @@ Unsupported "post dependency"
   | [],"with-test" -> nix_typed `NTBool @@ nix_var "doCheck"
   | [],"with-doc" -> nix_true
+  | [],"opam-version" -> nix_str "2.0.0"
   | [],"os" -> nix_str "linux"
   | [],"os-distribution" -> nix_str "nixos"
+  | [],"os-family" -> nix_str "nixos"
   | ["ocaml"],"native" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"native-dynlink" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"preinstalled" -> nix_true

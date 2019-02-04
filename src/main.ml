@@ -182,6 +182,7 @@ type nix_pkg = {
 exception Unsupported of string
 exception Wat of string
 exception Waat
+exception Doh of string * string
 
 let nix_true = `NTrue
 let nix_false = `NFalse
@@ -330,7 +331,7 @@ let rec resolve_ident = function
   | ["ocaml"],"native-dynlink" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"preinstalled" -> nix_true
   | [p],"installed" -> nix_neq (nix_var p) (nix_var "null")
-  | ps,v -> raise @@ Wat (OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
+  | ps,v -> raise @@ Doh ("resolve_ident: unknown identifier", OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
 
 let rec nix_bool_of_filter flt = match flt with
   | FBool true -> nix_true
@@ -342,7 +343,7 @@ let rec nix_bool_of_filter flt = match flt with
   | FOp (l,`Neq,r) -> nix_neq (nix_bool_of_filter l) (nix_bool_of_filter r)
   | FString s -> nix_str s
   | FNot x -> nix_not (nix_bool_of_filter x)
-  | f -> raise @@ Wat (OpamFilter.to_string f)
+  | f -> raise @@ Doh ("nix_bool_of_filter: unknown operation", OpamFilter.to_string f)
 
 let nix_bool_of_formula nix_bool_of_atom =
   let rec go nix_bool_of_empty formula = match formula with

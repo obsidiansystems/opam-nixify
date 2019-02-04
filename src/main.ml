@@ -337,6 +337,8 @@ let rec resolve_ident = function
   | [p],"installed" -> nix_neq (nix_var p) (nix_var "null")
   | ps,v -> raise @@ Doh ("resolve_ident: unknown identifier", OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
 
+let nix_ver_cmp = nix_vcall2 "vcompare"
+
 let rec nix_bool_of_filter flt = match flt with
   | FBool true -> nix_true
   | FBool false -> nix_false
@@ -345,6 +347,7 @@ let rec nix_bool_of_filter flt = match flt with
   | FIdent (ps,v,None) -> resolve_ident (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") ps, OpamVariable.to_string v)
   | FOp (l,`Eq,r) -> nix_eq (nix_bool_of_filter l) (nix_bool_of_filter r)
   | FOp (l,`Neq,r) -> nix_neq (nix_bool_of_filter l) (nix_bool_of_filter r)
+  | FOp (l,(#nix_relop as op),r) -> nix_ord op (nix_ver_cmp (nix_bool_of_filter l) (nix_bool_of_filter r)) (nix_int 0)
   | FString s -> nix_str s
   | FNot x -> nix_not (nix_bool_of_filter x)
   | f -> raise @@ Doh ("nix_bool_of_filter: unknown operation", OpamFilter.to_string f)
@@ -358,8 +361,6 @@ let nix_bool_of_formula nix_bool_of_atom =
   | Or (x,y) -> nix_or (go nix_false x) (go nix_false y)
   in
   go
-
-let nix_ver_cmp = nix_vcall2 "vcompare"
 
 let nix_optionals_opt b l = match b with
   | `NTrue -> Some l

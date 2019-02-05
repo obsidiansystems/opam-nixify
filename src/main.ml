@@ -1486,12 +1486,17 @@ let nixify =
        packages other than $(i,PACKAGE)."
       Arg.(pair ~sep:':' OpamArg.package_name OpamArg.package_name)
   in
+  let world_path =
+    OpamArg.mk_opt ["world";"o"] "PATH"
+      "Output the generated OPAM world derivation at the path $(i,PATH)."
+     Arg.(some OpamArg.filename) None
+  in
   let settings =
     OpamArg.mk_opt ["settings"] "FILE"
       "A settings file indicating what kind of output to generate."
       Arg.(some OpamArg.existing_filename_or_dash) None
   in
-  let nixify global_options files package warnings_sel refnames patches depexts settings =
+  let nixify global_options files package warnings_sel refnames patches depexts world_path settings =
     OpamArg.apply_global_options global_options;
     let settings = match settings with
       | None -> SettingsFile.empty
@@ -1502,6 +1507,7 @@ let nixify =
     let settings = {settings with depexts = List.fold_right (fun (pk,px) -> List.cons ([OpamPackage.Name.to_string px], f_named pk)) depexts settings.depexts} in
     let settings = {settings with patches = List.fold_right (fun (pk,pt) -> List.cons (OpamFilename.of_string pt, f_named pk)) patches settings.patches} in
     let settings = {settings with attribute_name = settings.attribute_name @ List.map (fun (pk,pa) -> OpamPackage.Name.to_string pa, Some (f_named pk)) refnames} in
+    let settings = {settings with world_path = OpamStd.Option.default_map settings.world_path world_path} in
     let opam_files_in_dir d =
       match OpamPinned.files_in_source d with
       | [] ->
@@ -1638,7 +1644,7 @@ let nixify =
              | None -> Format.printf "%a@." pp_nix_world (dlist [])
              | Some path -> OpamFilename.write path @@ Format.asprintf "%a@." pp_nix_world (dlist [])
   in
-  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts $settings),
+  Term.(const nixify $OpamArg.global_options $files $package $warnings $refnames $patches $depexts $world_path $settings),
   OpamArg.term_info "opam-nixify" ~doc ~man
 
 let () =

@@ -512,7 +512,8 @@ let rec pp_nix_expr_prec prec ppf nb =
         attributes
   | `NIf (cond,tbranch,ebranch) ->
       let paren = match prec with
-        | _ -> false
+        | `PElse -> false
+        | _ -> true
       in
       if paren then pp_print_text ppf "(" else ();
       fprintf ppf "@[if@ @[";

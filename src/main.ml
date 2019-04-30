@@ -125,6 +125,7 @@ module NixDeps = struct
   let iter f { ordering ; details } = ordering |> List.iter (fun p -> f p @@ Name.Map.find p details)
   let keys { ordering ; _ } = ordering
   let mem k { details ; _ } = Name.Map.mem k details
+  let find k { details ; _ } = Name.Map.find k details
   let singleton p v = { ordering = [p] ; details = Name.Map.singleton p v }
   let union x y = {
     ordering = x.ordering @ List.filter (fun p -> not (Name.Map.mem p x.details)) y.ordering ;
@@ -336,6 +337,7 @@ let rec resolve_ident = function
   | ["ocaml"],"native-dynlink" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"preinstalled" -> nix_true
   | [p],"installed" -> nix_neq (nix_var p) (nix_var "null")
+  | [p],"enable" -> nix_if (nix_neq (nix_var p) (nix_var "null")) (nix_str "enable") (nix_str "disable")
   | ps,v -> raise @@ Doh ("resolve_ident: unknown identifier", OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
 
 let nix_ver_cmp = nix_vcall2 "vcompare"
@@ -576,6 +578,7 @@ let pp_nix_pkg ppf nix_pkg =
     if NixDeps.mem name nix_pkg.deps then
       filtered_constraints |> List.iter (fun (filters, constraints) ->
         let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) `NTrue filters in
+        let guard = if (NixDeps.find name nix_pkg.deps).is_required then guard else nix_and (nix_neq (nix_var @@ argname_of_pkgname name) nix_null) guard in
         let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
         let asserted = nix_impl guard (nix_not cond) in
         match asserted with

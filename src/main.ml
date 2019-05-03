@@ -337,7 +337,7 @@ let rec resolve_ident = function
   | ["ocaml"],"native-dynlink" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"preinstalled" -> nix_true
   | [p],"installed" -> nix_neq (nix_var p) (nix_var "null")
-  | [p],"enable" -> nix_if (nix_neq (nix_var p) (nix_var "null")) (nix_str "enable") (nix_str "disable")
+  | [p],"enable" -> nix_typed `NTStr @@ nix_if (nix_neq (nix_var p) (nix_var "null")) (nix_str "enable") (nix_str "disable")
   | ps,v -> raise @@ Doh ("resolve_ident: unknown identifier", OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
 
 let nix_ver_cmp = nix_vcall2 "vcompare"

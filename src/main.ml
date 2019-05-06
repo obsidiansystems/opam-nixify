@@ -671,8 +671,9 @@ let rerelativize_nix base path =
 let pp_nix_world ppf world =
   let open Format in
   pp_nix_args ppf [nix_arg "pkgs" None];
-  pp_print_text ppf "let mkWorld = overrides: with pkgs.lib; fix' (extends overrides (self: { callPackage = pkgs.newScope self; })); in mkWorld (super: self: ";
+  pp_print_text ppf "with pkgs.lib; makeExtensible (self: ";
   fprintf ppf "{@;<1 2>@[<hv>";
+  fprintf ppf "callPackage = pkgs.newScope self;@ ";
   world |> List.iter (function
     | `CallPackage (attr, path) ->
         fprintf ppf "%s = self.callPackage %s/%s {};@ "

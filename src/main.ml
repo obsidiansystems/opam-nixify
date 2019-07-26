@@ -105,10 +105,30 @@ let run command =
   | `Error _ -> exit (OpamStd.Sys.get_exit_code `Bad_arguments)
   | _        -> exit (OpamStd.Sys.get_exit_code `Success)
 
+(*
+module NixTypes = struct
+  type 'x any = [`NAp of ('x * 'x) | `NVar of string | `NAttr of ('x * string)]
+  type 'x nbool = ['x any | `NTrue | `NFalse | `NAnd of ('x * 'x) | `NOr of ('x * 'x) | `NNot of 'x | `NImpl of ('x * 'x) | `NEq of ('x * 'x) | `NNeq of ('x * 'x)]
+  type nconst = [`NTrue | `NFalse | `NVer of string | `NStr of string]
+  type 'x nvar = [`NAnd of ('x * 'x) | `NOr of ('x * 'x) | `NNot of 'x | `NImpl of ('x * 'x) | `NEq of ('x * 'x) | `NNeq of ('x * 'x)]
+  type 'x fn = 'x any
+  type 'x expr = [nconst | `NAp of ([expr & expr fn]) | `NVar of string | `NAttr of ([expr obj & expr] * string)]
+end
+
+type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_bool) | `NNot of vnix_bool | `NImpl of (vnix_bool * vnix_bool) | `NVar of string]
+
+type nix_bool = [`NTrue | `NFalse | vnix_bool]
+*)
+
+type nix_relop = [ `Geq | `Gt | `Leq | `Lt ]
+type nix_type = [`NTBool | `NTStr | `NTList of nix_type | `NTSet | `NTPath | `NTFun ]
+type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NOrd of (nix_relop * nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NInt of int | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr) | `NTy of (nix_type * nix_expr)]
+type nix_const = [`NTrue | `NFalse | `NStr of string | `NInt of int | `NNull]
+
 type nix_dep = {
   is_required : bool ;
   ever_required : bool ;
-  filtered_constraints : (OpamTypes.filter list * (relop * string) OpamFormula.formula) list ;
+  filtered_constraints : (OpamTypes.filter list * (relop * nix_expr) OpamFormula.formula) list ;
   include_conditions : OpamTypes.filter ;
 }
 
@@ -140,26 +160,6 @@ module NixDeps = struct
   }
 
 end
-
-(*
-module NixTypes = struct
-  type 'x any = [`NAp of ('x * 'x) | `NVar of string | `NAttr of ('x * string)]
-  type 'x nbool = ['x any | `NTrue | `NFalse | `NAnd of ('x * 'x) | `NOr of ('x * 'x) | `NNot of 'x | `NImpl of ('x * 'x) | `NEq of ('x * 'x) | `NNeq of ('x * 'x)]
-  type nconst = [`NTrue | `NFalse | `NVer of string | `NStr of string]
-  type 'x nvar = [`NAnd of ('x * 'x) | `NOr of ('x * 'x) | `NNot of 'x | `NImpl of ('x * 'x) | `NEq of ('x * 'x) | `NNeq of ('x * 'x)]
-  type 'x fn = 'x any
-  type 'x expr = [nconst | `NAp of ([expr & expr fn]) | `NVar of string | `NAttr of ([expr obj & expr] * string)]
-end
-
-type vnix_bool = [`NAnd of (vnix_bool * vnix_bool) | `NOr of (vnix_bool * vnix_bool) | `NNot of vnix_bool | `NImpl of (vnix_bool * vnix_bool) | `NVar of string]
-
-type nix_bool = [`NTrue | `NFalse | vnix_bool]
-*)
-
-type nix_relop = [ `Geq | `Gt | `Leq | `Lt ]
-type nix_type = [`NTBool | `NTStr | `NTList of nix_type | `NTSet | `NTPath | `NTFun ]
-type nix_expr = [`NTrue | `NFalse | `NAnd of (nix_expr * nix_expr) | `NOr of (nix_expr * nix_expr) | `NNot of nix_expr | `NImpl of (nix_expr * nix_expr) | `NVar of string | `NNull | `NAp of (nix_expr * nix_expr) | `NAttr of (nix_expr * string) | `NEq of (nix_expr * nix_expr) | `NNeq of (nix_expr * nix_expr) | `NOrd of (nix_relop * nix_expr * nix_expr) | `NList of nix_expr list | `NStr of string | `NStrI of [`NLit of string | `NInterp of nix_expr] list | `NInt of int | `NSet of (string * nix_expr) list | `NIf of (nix_expr * nix_expr * nix_expr) | `NPath of string | `NAppend of (nix_expr * nix_expr) | `NTy of (nix_type * nix_expr)]
-type nix_const = [`NTrue | `NFalse | `NStr of string | `NInt of int | `NNull]
 
 type nix_pkg = {
   pname: OpamPackage.Name.t;
@@ -297,7 +297,6 @@ let argname_of_pkgname p =
   | n -> n
 
 let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (argname_of_pkgname pkg))
-let nix_ver_of_filter flt = `NStr flt
 
 let optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
   | Global,"build" -> Some (B true)
@@ -378,12 +377,11 @@ let nix_optionals b l = match nix_optionals_opt b l with
   | None -> nix_list []
 
 let nix_bool_of_constraint pkg (relop, ver) =
-  let chk_ver = nix_ver_of_filter ver in
   let pkg_ver = nix_ver_of_pkg pkg in
   match relop with
-  | `Eq -> nix_eq pkg_ver chk_ver
-  | `Neq -> nix_neq pkg_ver chk_ver
-  | #nix_relop as op -> nix_ord op (nix_ver_cmp (nix_var @@ argname_of_pkgname pkg) chk_ver) (nix_int 0)
+  | `Eq -> nix_eq pkg_ver ver
+  | `Neq -> nix_neq pkg_ver ver
+  | #nix_relop as op -> nix_ord op (nix_ver_cmp (nix_var @@ argname_of_pkgname pkg) ver) (nix_int 0)
 
 let rec pp_nix_expr_prec prec ppf nb =
   let open Format in
@@ -818,6 +816,41 @@ module SettingsFile = struct
   include OpamFile.SyntaxFile(SettingsSyntax)
 end
 
+let parse_ident s =
+  match OpamStd.String.rcut_at s ':' with
+  | None -> [], s
+  | Some (p,last) ->
+      match OpamStd.String.rcut_at p '?' with
+      | None ->
+          OpamStd.String.split p '+', last
+      | Some (_p,_) ->
+          raise @@ Wat s
+
+exception Unclosed_variable_replacement of string
+
+let string_interp_regex =
+  let open Re in
+  let notclose =
+    rep (alt [
+        diff notnl (set "}");
+        seq [char '}'; alt [diff notnl (set "%"); stop] ]
+      ])
+  in
+  compile (alt [
+      str "%%";
+      seq [str "%{"; group (greedy notclose); opt (group (str "}%"))];
+    ])
+
+let nix_expand_string s = let f = function
+  | `Delim g -> (let str = Re.Group.get g 0 in
+    if str = "%%" then nix_str "%"
+    else if not (OpamStd.String.ends_with ~suffix:"}%" str) then
+      raise @@ Unclosed_variable_replacement str
+    else resolve_ident @@ parse_ident (String.sub str 2 (String.length str - 4)))
+  | `Text t -> nix_str (shell_escape t)
+  in
+  List.fold_right (fun x -> nix_str_append (f x)) (Re.split_full string_interp_regex s) (nix_str "")
+
 let nixdep_of_filtered_constraints fc =
   let rec separate fc = match fc with
   | Empty -> [], Empty
@@ -834,8 +867,9 @@ let nixdep_of_filtered_constraints fc =
       | _, _ -> raise (Wat "OR in requirements"))
   | Atom (Filter f) -> [f], Empty
   | Atom (Constraint (_relop, FBool _)) -> raise (Wat "boolean literal as version number")
-  | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, ver)
-  | Atom (Constraint (_relop, (FIdent (_,_,_) as bad))) -> raise (Wat ("identifier as version number: " ^ OpamFilter.to_string bad))
+  | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, nix_expand_string ver)
+  | Atom (Constraint (relop, FIdent (scopes,basename,_))) -> [], Atom (relop, resolve_ident (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") scopes, OpamVariable.to_string basename))
+  | Atom (Constraint (_relop, (FIdent (_,_,_) as bad))) -> raise (Wat ("switch identifier as version number: " ^ OpamFilter.to_string bad)) (* FIXME should be handleable *)
   | Atom (Constraint (_relop, FOp (_,_,_))) -> raise (Wat "comparison operator in version number")
   | Atom (Constraint (_relop, FAnd (_,_))) -> raise (Wat "AND in version number")
   | Atom (Constraint (_relop, FOr (_,_))) -> raise (Wat "OR in version number")
@@ -868,41 +902,6 @@ let nixdep_of_filtered_constraints fc =
   | `Formula f -> false
   in
   { is_required; ever_required = (optionality_fc <> `False); filtered_constraints; include_conditions }
-
-exception Unclosed_variable_replacement of string
-
-let string_interp_regex =
-  let open Re in
-  let notclose =
-    rep (alt [
-        diff notnl (set "}");
-        seq [char '}'; alt [diff notnl (set "%"); stop] ]
-      ])
-  in
-  compile (alt [
-      str "%%";
-      seq [str "%{"; group (greedy notclose); opt (group (str "}%"))];
-    ])
-
-let parse_ident s =
-  match OpamStd.String.rcut_at s ':' with
-  | None -> [], s
-  | Some (p,last) ->
-      match OpamStd.String.rcut_at p '?' with
-      | None ->
-          OpamStd.String.split p '+', last
-      | Some (_p,_) ->
-          raise @@ Wat s
-
-let nix_expand_string s = let f = function
-  | `Delim g -> (let str = Re.Group.get g 0 in
-    if str = "%%" then nix_str "%"
-    else if not (OpamStd.String.ends_with ~suffix:"}%" str) then
-      raise @@ Unclosed_variable_replacement str
-    else resolve_ident @@ parse_ident (String.sub str 2 (String.length str - 4)))
-  | `Text t -> nix_str (shell_escape t)
-  in
-  List.fold_right (fun x -> nix_str_append (f x)) (Re.split_full string_interp_regex s) (nix_str "")
 
 let nix_expr_of_arg = function
   | CString s -> nix_list [nix_expand_string s]

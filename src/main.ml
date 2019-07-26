@@ -251,7 +251,7 @@ let rec nix_strc ls r = match ls, r with
   | x :: [], `NStrI rs -> x :: rs
   | x :: [], r -> [x; `NInterp r]
   | l :: ls, r -> l :: nix_strc ls r
-  | _ -> raise Waat
+  | _ -> raise (Wat "nix_strc: impossibru")
 let nix_str_append l r = match nix_stringify l, nix_stringify r with
   | `NStrI ss, r -> nix_stri @@ nix_strc ss r
   | `NStr s, r -> nix_stri @@ nix_strc [`NLit s] r
@@ -821,7 +821,7 @@ end
 let nixdep_of_filtered_constraints fc =
   let rec separate fc = match fc with
   | Empty -> [], Empty
-  | Block _ -> raise Waat
+  | Block _ -> raise (Wat "block")
   | And (l, r) ->
       let lp, la = separate l in
       let rp, ra = separate r in
@@ -831,25 +831,25 @@ let nixdep_of_filtered_constraints fc =
       let rp, ra = separate r in
       match lp, rp with
       | [], [] -> [], Or (la, ra)
-      | _, _ -> raise Waat)
+      | _, _ -> raise (Wat "OR in requirements"))
   | Atom (Filter f) -> [f], Empty
-  | Atom (Constraint (_relop, FBool _)) -> raise Waat
+  | Atom (Constraint (_relop, FBool _)) -> raise (Wat "boolean literal as version number")
   | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, ver)
-  | Atom (Constraint (_relop, FIdent (_,_,_))) -> raise Waat
-  | Atom (Constraint (_relop, FOp (_,_,_))) -> raise Waat
-  | Atom (Constraint (_relop, FAnd (_,_))) -> raise Waat
-  | Atom (Constraint (_relop, FOr (_,_))) -> raise Waat
-  | Atom (Constraint (_relop, FNot _)) -> raise Waat
-  | Atom (Constraint (_relop, FDefined _)) -> raise Waat
-  | Atom (Constraint (_relop, FUndef _)) -> raise Waat
+  | Atom (Constraint (_relop, (FIdent (_,_,_) as bad))) -> raise (Wat ("identifier as version number: " ^ OpamFilter.to_string bad))
+  | Atom (Constraint (_relop, FOp (_,_,_))) -> raise (Wat "comparison operator in version number")
+  | Atom (Constraint (_relop, FAnd (_,_))) -> raise (Wat "AND in version number")
+  | Atom (Constraint (_relop, FOr (_,_))) -> raise (Wat "OR in version number")
+  | Atom (Constraint (_relop, FNot _)) -> raise (Wat "NOT in version number")
+  | Atom (Constraint (_relop, FDefined _)) -> raise (Wat "defined check in version number")
+  | Atom (Constraint (_relop, FUndef _)) -> raise (Wat "undefined check in version number")
   in
   let rec cond fc = match fc with
   | Empty -> FBool true
-  | Block _ -> raise Waat
+  | Block _ -> raise (Wat "dependency is contingent on block")
   | And (l, r) -> FOr (cond l, cond r)
   | Or (l, r) -> (match cond l, cond r with
     | FBool true, FBool true -> FBool true
-    | _, _ -> raise Waat)
+    | _, _ -> raise (Wat "explicit disjunction of implicitly disjoined contingencies"))
   | Atom (Filter f) -> f
   | Atom (Constraint _) -> FBool true
   in
@@ -950,7 +950,7 @@ let nix_name ~refnames name =
 
 let rec nixdeps_of_depends ~refnames depends = match depends with
   | Empty -> NixDeps.empty
-  | Block _ -> raise Waat
+  | Block _ -> raise (Wat "block in depends")
   | And (l, r) -> NixDeps.union
     (nixdeps_of_depends ~refnames l)
     (nixdeps_of_depends ~refnames r)
@@ -959,7 +959,7 @@ let rec nixdeps_of_depends ~refnames depends = match depends with
 
 let rec nixdeps_of_depopts ~refnames depopts = match depopts with
   | Empty -> NixDeps.empty
-  | Block _ -> raise Waat
+  | Block _ -> raise (Wat "block in depopts")
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
   | Or (l, r) -> NixDeps.union (nixdeps_of_depopts ~refnames l) (nixdeps_of_depopts ~refnames r)
   | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@

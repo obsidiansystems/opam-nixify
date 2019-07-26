@@ -330,7 +330,7 @@ let optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string 
   | Global,"build" -> Some (B true)
   | Global,"os" -> Some (S "linux")
   | Global,"os-distribution" -> Some (S "nixos")
-  | Global,"with-doc" -> Some (B true)
+  (* | Global,"with-doc" -> Some (B true) *) (* this can actually be a problem to always do, but still want to have the option *)
   | _,_ -> None
 
 let propagation_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
@@ -354,7 +354,7 @@ let rec resolve_ident ~refnames = function
   | [],"build" -> nix_true
   | [],"post" -> raise @@ Unsupported "post dependency"
   | [],"with-test" -> nix_typed `NTBool @@ nix_var "doCheck"
-  | [],"with-doc" -> nix_true
+  | [],"with-doc" -> nix_typed `NTBool @@ nix_var "buildDocs"
   | [],"dev" -> nix_typed `NTBool @@ nix_var "buildAsDev"
   | [],"opam-version" -> nix_str "2.0.0"
   | [],"os" -> nix_str "linux"
@@ -592,7 +592,7 @@ let pp_nix_pkg ~refnames ppf nix_pkg =
       fprintf ppf "/*@[";
       pp_print_text ppf @@ OpamFile.OPAM.write_to_string file;
       fprintf ppf "@]*/@;");
-  pp_nix_args ppf ((if nix_pkg.uses_runCommand then [nix_arg "runCommand" None] else []) @ (if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "buildAsDev" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
+  pp_nix_args ppf ((if nix_pkg.uses_runCommand then [nix_arg "runCommand" None] else []) @ (if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "buildDocs" @@ Some nix_false; nix_arg "buildAsDev" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
   fprintf ppf "let vcompare = stdenv.lib.versioning.debian.version.compare; in@ ";
   fprintf ppf "let version = ";
   pp_nix_expr ppf (nix_str (OpamPackage.Version.to_string nix_pkg.version));

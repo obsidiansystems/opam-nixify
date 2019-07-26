@@ -896,6 +896,12 @@ let nixdep_of_filtered_constraints ~refnames fc =
       match lp, rp with
       | [], [] -> [], Or (la, ra)
       | _, _ -> raise (Wat "OR in requirements"))
+  | Atom (Filter (FOp (FIdent ([], v, None) as filt, relop, ver))) when OpamVariable.to_string v = "build" ->
+      (* special case for when people can't spell opam *)
+      separate (And (Atom (Filter filt), Atom (Constraint (relop, ver))))
+  | Atom (Filter (FOp (FIdent ([None], v, None) as filt, relop, ver))) when OpamVariable.to_string v = "build" ->
+      (* special case for when people can't spell opam *)
+      separate (And (Atom (Filter filt), Atom (Constraint (relop, ver))))
   | Atom (Filter f) -> [f], Empty
   | Atom (Constraint (_relop, FBool _)) -> raise (Wat "boolean literal as version number")
   | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, nix_expand_string ~refnames ver)
@@ -915,6 +921,12 @@ let nixdep_of_filtered_constraints ~refnames fc =
   | Or (l, r) -> (match cond l, cond r with
     | FBool true, FBool true -> FBool true
     | _, _ -> raise (Wat "explicit disjunction of implicitly disjoined contingencies"))
+  | Atom (Filter (FOp (FIdent ([], v, None) as filt, _, _))) when OpamVariable.to_string v = "build" ->
+      (* special case for when people can't spell opam *)
+      filt
+  | Atom (Filter (FOp (FIdent ([None], v, None) as filt, _, _))) when OpamVariable.to_string v = "build" ->
+      (* special case for when people can't spell opam *)
+      filt
   | Atom (Filter f) -> f
   | Atom (Constraint _) -> FBool true
   in

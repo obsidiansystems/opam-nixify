@@ -105,6 +105,25 @@ let run command =
   | `Error _ -> exit (OpamStd.Sys.get_exit_code `Bad_arguments)
   | _        -> exit (OpamStd.Sys.get_exit_code `Success)
 
+let simple_env f fv = match OpamVariable.Full.scope fv with
+  | Package _ -> None
+  | _ -> f @@ OpamVariable.to_string (OpamVariable.Full.variable fv)
+
+let update x y = y
+
+let possibly_opt action env x (y, filter_opt) =
+  if OpamFilter.opt_eval_to_bool env filter_opt then action x y else x
+
+let possibly action env x (y, filter) =
+  possibly_opt action env x (y, Some filter)
+
+let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
+
+let nix_name ~refnames name =
+  let env = simple_env (function | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name) | _ -> None) in
+  List.fold_left (possibly_opt update env) "%{name}%" refnames
+  |> OpamFilter.expand_string env
+
 (*
 module NixTypes = struct
   type 'x any = [`NAp of ('x * 'x) | `NVar of string | `NAttr of ('x * string)]
@@ -132,24 +151,37 @@ type nix_dep = {
   include_conditions : OpamTypes.filter ;
 }
 
+module StringO = struct
+  type t = string
+  let to_string x = x
+  let of_string x = x
+  let compare n1 n2 = compare n1 n2
+  let to_json x = `String x
+  let of_json = function
+    | `String s -> Some s
+    | _ -> None
+end
+
+module StringMap = OpamStd.Map.Make(StringO)
+
 module NixDeps = struct
   open OpamPackage
 
   type t = {
-    ordering : Name.t list ;
-    details : nix_dep Name.Map.t ;
+    ordering : string list ;
+    details : nix_dep StringMap.t ;
   }
 
-  let bindings { ordering ; details } = ordering |> List.map (fun p -> (p, Name.Map.find p details))
-  let empty = { ordering = [] ; details = Name.Map.empty }
-  let iter f { ordering ; details } = ordering |> List.iter (fun p -> f p @@ Name.Map.find p details)
+  let bindings { ordering ; details } = ordering |> List.map (fun p -> (p, StringMap.find p details))
+  let empty = { ordering = [] ; details = StringMap.empty }
+  let iter f { ordering ; details } = ordering |> List.iter (fun p -> f p @@ StringMap.find p details)
   let keys { ordering ; _ } = ordering
-  let mem k { details ; _ } = Name.Map.mem k details
-  let find k { details ; _ } = Name.Map.find k details
-  let singleton p v = { ordering = [p] ; details = Name.Map.singleton p v }
+  let mem k { details ; _ } = StringMap.mem k details
+  let find k { details ; _ } = StringMap.find k details
+  let singleton p v = { ordering = [p] ; details = StringMap.singleton p v }
   let union x y = {
-    ordering = x.ordering @ List.filter (fun p -> not (Name.Map.mem p x.details)) y.ordering ;
-    details = OpamPackage.Name.Map.union
+    ordering = x.ordering @ List.filter (fun p -> not (StringMap.mem p x.details)) y.ordering ;
+    details = StringMap.union
       (fun d1 d2 ->
         { is_required = d1.is_required || d2.is_required ;
           ever_required = d1.ever_required || d2.ever_required ;
@@ -164,7 +196,7 @@ end
 type nix_pkg = {
   pname: OpamPackage.Name.t;
   version: OpamPackage.Version.t;
-  attribute: OpamPackage.Name.t;
+  attribute: string;
   deps: NixDeps.t;
   prop_deps: NixDeps.t;
   conflicts: NixDeps.t;
@@ -291,12 +323,8 @@ let rec nix_concat_lists = function
 let nix_escape s = Re.replace (Re.compile (Re.alt [Re.char '\\'; Re.char '"'; Re.str "${"; Re.str "\n"])) ~f:(fun g -> "\\" ^ (fun c -> if c = "\n" then "n" else c) (Re.Group.get g 0)) s
 let shell_escape s = "'" ^ Re.replace (Re.compile (Re.char '\'')) ~f:(fun _ -> "'\\''") s ^ "'"
 
-let argname_of_pkgname p =
-  match OpamPackage.Name.to_string p with
-  | "ocamlfind" -> "findlib"
-  | n -> n
-
-let nix_ver_of_pkg pkg = `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar (argname_of_pkgname pkg))
+let nix_ver_of_nixpkg pkg = nix_typed `NTStr @@ `NAp (`NAttr (`NAttr(`NVar "stdenv","lib"),"getVersion"),`NVar pkg)
+let nix_ver_of_pkg ~refnames pkg = nix_ver_of_nixpkg @@ nix_name ~refnames pkg
 
 let optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
   | Global,"build" -> Some (B true)
@@ -309,8 +337,8 @@ let propagation_env v = match OpamVariable.Full.scope v, OpamVariable.to_string 
   | Global,"build" -> Some (B false)
   | _,_ -> None
 
-let rec resolve_ident = function
-  | (_::_::_) as ps,v -> List.fold_left nix_and nix_true @@ List.map (fun p -> resolve_ident ([p], v)) ps
+let rec resolve_ident ~refnames = function
+  | (_::_::_) as ps,v -> List.fold_left nix_and nix_true @@ List.map (fun p -> resolve_ident ~refnames ([p], v)) ps
   | [],"name" -> nix_typed `NTStr @@ nix_var "pname"
   | [],"version" -> nix_typed `NTStr @@ nix_var "version"
   | [],"jobs" -> nix_str "1"
@@ -335,24 +363,24 @@ let rec resolve_ident = function
   | ["ocaml"],"native" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"native-dynlink" -> nix_not (`NAttr (nix_var "stdenv","isMips"))
   | ["ocaml"],"preinstalled" -> nix_true
-  | [p],"installed" -> nix_neq (nix_var p) (nix_var "null")
-  | [p],"enable" -> nix_typed `NTStr @@ nix_if (nix_neq (nix_var p) (nix_var "null")) (nix_str "enable") (nix_str "disable")
-  | [p],"version" -> nix_typed `NTStr @@ nix_attr (nix_var p) "version"
+  | [p],"installed" -> nix_neq (nix_var @@ nix_name ~refnames @@ OpamPackage.Name.of_string p) (nix_var "null")
+  | [p],"enable" -> nix_typed `NTStr @@ nix_if (nix_neq (nix_var @@ nix_name ~refnames @@ OpamPackage.Name.of_string p) (nix_var "null")) (nix_str "enable") (nix_str "disable")
+  | [p],"version" -> nix_ver_of_pkg ~refnames @@ OpamPackage.Name.of_string p
   | ps,v -> raise @@ Doh ("resolve_ident: unknown identifier", OpamFilter.to_string @@ FIdent (List.map (function | "_" -> None | p -> Some (OpamPackage.Name.of_string p)) ps, OpamVariable.of_string v, None))
 
 let nix_ver_cmp = nix_vcall2 "vcompare"
 
-let rec nix_bool_of_filter flt = match flt with
+let rec nix_bool_of_filter ~refnames flt = match flt with
   | FBool true -> nix_true
   | FBool false -> nix_false
-  | FAnd (l,r) -> nix_and (nix_bool_of_filter l) (nix_bool_of_filter r)
-  | FOr (l,r) -> nix_or (nix_bool_of_filter l) (nix_bool_of_filter r)
-  | FIdent (ps,v,None) -> resolve_ident (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") ps, OpamVariable.to_string v)
-  | FOp (l,`Eq,r) -> nix_eq (nix_bool_of_filter l) (nix_bool_of_filter r)
-  | FOp (l,`Neq,r) -> nix_neq (nix_bool_of_filter l) (nix_bool_of_filter r)
-  | FOp (l,(#nix_relop as op),r) -> nix_ord op (nix_ver_cmp (nix_bool_of_filter l) (nix_bool_of_filter r)) (nix_int 0)
+  | FAnd (l,r) -> nix_and (nix_bool_of_filter ~refnames l) (nix_bool_of_filter ~refnames r)
+  | FOr (l,r) -> nix_or (nix_bool_of_filter ~refnames l) (nix_bool_of_filter ~refnames r)
+  | FIdent (ps,v,None) -> resolve_ident ~refnames (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") ps, OpamVariable.to_string v)
+  | FOp (l,`Eq,r) -> nix_eq (nix_bool_of_filter ~refnames l) (nix_bool_of_filter ~refnames r)
+  | FOp (l,`Neq,r) -> nix_neq (nix_bool_of_filter ~refnames l) (nix_bool_of_filter ~refnames r)
+  | FOp (l,(#nix_relop as op),r) -> nix_ord op (nix_ver_cmp (nix_bool_of_filter ~refnames l) (nix_bool_of_filter ~refnames r)) (nix_int 0)
   | FString s -> nix_str s
-  | FNot x -> nix_not (nix_bool_of_filter x)
+  | FNot x -> nix_not (nix_bool_of_filter ~refnames x)
   | f -> raise @@ Doh ("nix_bool_of_filter: unknown operation", OpamFilter.to_string f)
 
 let nix_bool_of_formula nix_bool_of_atom =
@@ -378,11 +406,11 @@ let nix_optionals b l = match nix_optionals_opt b l with
   | None -> nix_list []
 
 let nix_bool_of_constraint pkg (relop, ver) =
-  let pkg_ver = nix_ver_of_pkg pkg in
+  let pkg_ver = nix_ver_of_nixpkg pkg in
   match relop with
   | `Eq -> nix_eq pkg_ver ver
   | `Neq -> nix_neq pkg_ver ver
-  | #nix_relop as op -> nix_ord op (nix_ver_cmp (nix_var @@ argname_of_pkgname pkg) ver) (nix_int 0)
+  | #nix_relop as op -> nix_ord op (nix_ver_cmp (nix_var pkg) ver) (nix_int 0)
 
 let rec pp_nix_expr_prec prec ppf nb =
   let open Format in
@@ -543,7 +571,7 @@ let pp_nix_expr = pp_nix_expr_prec `PElse
 let nix_arg name deflt = `NArg (name, deflt)
 
 let arg_of_dep (p, {is_required; _}) =
-  nix_arg (argname_of_pkgname p) @@ if is_required then None else Some nix_null
+  nix_arg p @@ if is_required then None else Some nix_null
 
 let pp_nix_arg ppf = function
   | `NArg (name, None) -> Format.fprintf ppf "%s" name
@@ -555,7 +583,7 @@ let pp_nix_args ppf args =
   pp_print_list ~pp_sep:(fun ppf _ -> fprintf ppf ",@ ") pp_nix_arg ppf args;
   fprintf ppf "@ }:@]@ "
 
-let pp_nix_pkg ppf nix_pkg =
+let pp_nix_pkg ~refnames ppf nix_pkg =
   let open Format in
   fprintf ppf "@[<hv>";
   (match nix_pkg.raw_opam with
@@ -566,9 +594,12 @@ let pp_nix_pkg ppf nix_pkg =
       fprintf ppf "@]*/@;");
   pp_nix_args ppf ((if nix_pkg.uses_runCommand then [nix_arg "runCommand" None] else []) @ (if nix_pkg.uses_zip then [nix_arg "unzip" None] else []) @ [nix_arg "doCheck" @@ Some nix_false; nix_arg "buildAsDev" @@ Some nix_false; nix_arg "stdenv" None; nix_arg "opam" None; nix_arg "fetchurl" None] @ List.map arg_of_dep (NixDeps.bindings nix_pkg.deps)) ;
   fprintf ppf "let vcompare = stdenv.lib.versioning.debian.version.compare; in@ ";
+  fprintf ppf "let version = ";
+  pp_nix_expr ppf (nix_str (OpamPackage.Version.to_string nix_pkg.version));
+  fprintf ppf "; in@ ";
   nix_pkg.deps |> NixDeps.iter (fun name { ever_required; filtered_constraints; _ } ->
     filtered_constraints |> List.iter (fun (filters, constraints) ->
-      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) (if ever_required then nix_true else nix_neq (nix_var @@ argname_of_pkgname name) nix_null) filters in
+      let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter ~refnames r) (if ever_required then nix_true else nix_neq (nix_var @@ name) nix_null) filters in
       let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
       let asserted = nix_impl guard cond in
       match asserted with
@@ -577,8 +608,8 @@ let pp_nix_pkg ppf nix_pkg =
   nix_pkg.conflicts |> NixDeps.iter (fun name { filtered_constraints; _ } ->
     if NixDeps.mem name nix_pkg.deps then
       filtered_constraints |> List.iter (fun (filters, constraints) ->
-        let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter r) `NTrue filters in
-        let guard = if (NixDeps.find name nix_pkg.deps).is_required then guard else nix_and (nix_neq (nix_var @@ argname_of_pkgname name) nix_null) guard in
+        let guard = List.fold_left (fun l r -> nix_and l @@ nix_bool_of_filter ~refnames r) `NTrue filters in
+        let guard = if (NixDeps.find name nix_pkg.deps).is_required then guard else nix_and (nix_neq (nix_var @@ name) nix_null) guard in
         let cond = nix_bool_of_formula (nix_bool_of_constraint name) `NTrue constraints in
         let asserted = nix_impl guard (nix_not cond) in
         match asserted with
@@ -608,8 +639,8 @@ let pp_nix_pkg ppf nix_pkg =
   let buildInputs = NixDeps.bindings nix_pkg.deps
     |> OpamStd.List.filter_map (fun (p, { include_conditions ; _ }) ->
         nix_optionals_opt
-          (nix_bool_of_filter include_conditions)
-          (nix_list [nix_var @@ argname_of_pkgname p]))
+          (nix_bool_of_filter ~refnames include_conditions)
+          (nix_list [nix_var p]))
     |> nix_list
     |> nix_concat_lists
   in
@@ -619,8 +650,8 @@ let pp_nix_pkg ppf nix_pkg =
   let propagatedBuildInputs = NixDeps.bindings nix_pkg.prop_deps
     |> OpamStd.List.filter_map (fun (p, { include_conditions ; _ }) ->
         nix_optionals_opt
-          (nix_bool_of_filter @@ OpamFilter.partial_eval propagation_env include_conditions)
-          (nix_list [nix_var @@ argname_of_pkgname p]))
+          (nix_bool_of_filter ~refnames @@ OpamFilter.partial_eval propagation_env include_conditions)
+          (nix_list [nix_var p]))
     |> nix_list
     |> nix_concat_lists
   in
@@ -676,12 +707,11 @@ let pp_nix_world ppf world =
   world |> List.iter (function
     | `CallPackage (attr, path) ->
         fprintf ppf "%s = self.callPackage %s/%s {};@ "
-          (OpamPackage.Name.to_string attr)
+          attr
           (Filename.dirname path)
           (Filename.basename path)
     | `Inherit (attr, expr) ->
-        fprintf ppf "inherit (%s) %s;@ " expr
-          (OpamPackage.Name.to_string attr));
+        fprintf ppf "inherit (%s) %s;@ " expr attr);
   fprintf ppf "@]})"
 
 module SettingsSyntax = struct
@@ -852,7 +882,7 @@ let nix_expand_string ~refnames ?escape:(esc=fun x -> x) s = let f = function
   in
   List.fold_right (fun x -> nix_str_append (f x)) (Re.split_full string_interp_regex s) (nix_str "")
 
-let nixdep_of_filtered_constraints fc =
+let nixdep_of_filtered_constraints ~refnames fc =
   let rec separate fc = match fc with
   | Empty -> [], Empty
   | Block _ -> raise (Wat "block")
@@ -868,8 +898,8 @@ let nixdep_of_filtered_constraints fc =
       | _, _ -> raise (Wat "OR in requirements"))
   | Atom (Filter f) -> [f], Empty
   | Atom (Constraint (_relop, FBool _)) -> raise (Wat "boolean literal as version number")
-  | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, nix_expand_string ver)
-  | Atom (Constraint (relop, FIdent (scopes,basename,_))) -> [], Atom (relop, resolve_ident (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") scopes, OpamVariable.to_string basename))
+  | Atom (Constraint (relop, FString ver)) -> [], Atom (relop, nix_expand_string ~refnames ver)
+  | Atom (Constraint (relop, FIdent (scopes,basename,_))) -> [], Atom (relop, resolve_ident ~refnames (List.map (OpamStd.Option.map_default OpamPackage.Name.to_string "_") scopes, OpamVariable.to_string basename))
   | Atom (Constraint (_relop, (FIdent (_,_,_) as bad))) -> raise (Wat ("switch identifier as version number: " ^ OpamFilter.to_string bad)) (* FIXME should be handleable *)
   | Atom (Constraint (_relop, FOp (_,_,_))) -> raise (Wat "comparison operator in version number")
   | Atom (Constraint (_relop, FAnd (_,_))) -> raise (Wat "AND in version number")
@@ -904,49 +934,29 @@ let nixdep_of_filtered_constraints fc =
   in
   { is_required; ever_required = (optionality_fc <> `False); filtered_constraints; include_conditions }
 
-let nix_expr_of_arg = function
-  | CString s -> nix_list [nix_expand_string ~escape:shell_escape s]
-  | CIdent v -> nix_list [resolve_ident @@ parse_ident v]
+let nix_expr_of_arg ~refnames = function
+  | CString s -> nix_list [nix_expand_string ~refnames ~escape:shell_escape s]
+  | CIdent v -> nix_list [resolve_ident ~refnames @@ parse_ident v]
 
-let nix_expr_of_patches args = `NList (
+let nix_expr_of_patches ~refnames args = `NList (
   args |> OpamStd.List.filter_map (fun (arg, flt) ->
     nix_optionals_opt
-      (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
+      (OpamStd.Option.map_default (nix_bool_of_filter ~refnames) `NTrue flt)
       (nix_list [arg])))
     |> nix_concat_lists
 
-let nix_expr_of_args args = `NList (
+let nix_expr_of_args ~refnames args = `NList (
   args |> OpamStd.List.filter_map (fun (arg, flt) ->
     nix_optionals_opt
-      (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
-      (nix_expr_of_arg arg)))
+      (OpamStd.Option.map_default (nix_bool_of_filter ~refnames) `NTrue flt)
+      (nix_expr_of_arg ~refnames arg)))
     |> nix_concat_lists
 
-let nix_expr_of_commands cmds = `NList (
+let nix_expr_of_commands ~refnames cmds = `NList (
   cmds |> OpamStd.List.filter_map (fun (args, flt) ->
     nix_optionals_opt
-      (OpamStd.Option.map_default nix_bool_of_filter `NTrue flt)
-      (nix_expr_of_args args)))
-
-let simple_env f fv = match OpamVariable.Full.scope fv with
-  | Package _ -> None
-  | _ -> f @@ OpamVariable.to_string (OpamVariable.Full.variable fv)
-
-let update x y = y
-
-let possibly_opt action env x (y, filter_opt) =
-  if OpamFilter.opt_eval_to_bool env filter_opt then action x y else x
-
-let possibly action env x (y, filter) =
-  possibly_opt action env x (y, Some filter)
-
-let map_filtered_list f = List.map (fun (x,y) -> (f x,y))
-
-let nix_name ~refnames name =
-  let env = simple_env (function | "name" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string name) | _ -> None) in
-  List.fold_left (possibly_opt update env) "%{name}%" refnames
-  |> OpamFilter.expand_string env
-  |> OpamPackage.Name.of_string
+      (OpamStd.Option.map_default (nix_bool_of_filter ~refnames) `NTrue flt)
+      (nix_expr_of_args ~refnames args)))
 
 let rec nixdeps_of_depends ~refnames depends = match depends with
   | Empty -> NixDeps.empty
@@ -955,7 +965,7 @@ let rec nixdeps_of_depends ~refnames depends = match depends with
     (nixdeps_of_depends ~refnames l)
     (nixdeps_of_depends ~refnames r)
   | Or (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " OROROR " ^ OpamFilter.string_of_filtered_formula r)
-  | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@ nixdep_of_filtered_constraints cs
+  | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@ nixdep_of_filtered_constraints ~refnames cs
 
 let rec nixdeps_of_depopts ~refnames depopts = match depopts with
   | Empty -> NixDeps.empty
@@ -963,16 +973,16 @@ let rec nixdeps_of_depopts ~refnames depopts = match depopts with
   | And (l, r) -> raise @@ Wat (OpamFilter.string_of_filtered_formula l ^ " ANDANDAND " ^ OpamFilter.string_of_filtered_formula r)
   | Or (l, r) -> NixDeps.union (nixdeps_of_depopts ~refnames l) (nixdeps_of_depopts ~refnames r)
   | Atom (name, cs) -> NixDeps.singleton (nix_name ~refnames name) @@
-    { (nixdep_of_filtered_constraints cs) with is_required = false; ever_required = false; include_conditions = FIdent([Some name],OpamVariable.of_string "installed",None) }
+    { (nixdep_of_filtered_constraints ~refnames cs) with is_required = false; ever_required = false; include_conditions = FIdent([Some name],OpamVariable.of_string "installed",None) }
 
 let nixdeps_of_depexts depexts =
   depexts |> List.map (fun (pkgs, flt) ->
     nix_optionals_opt
-      (nix_bool_of_filter flt)
+      (nix_bool_of_filter ~refnames:[] flt)
       (nix_list @@ List.map nix_str pkgs)
     |> function
       | None -> []
-      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton (OpamPackage.Name.of_string name) { is_required = true; ever_required = true; filtered_constraints = []; include_conditions = FBool true }
+      | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton name { is_required = true; ever_required = true; filtered_constraints = []; include_conditions = FBool true }
                                                      | _ -> raise @@ Wat "depext constraint too complex")
       | Some _ -> raise @@ Wat "depext constraint too complex")
   |> List.concat
@@ -1321,19 +1331,19 @@ let append_env x y v = match x v with
   | r -> r
 
 let nix_expression_path st attribute settings opam =
-  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string attribute) | _ -> None) opam in
   List.fold_left (possibly_opt update env) "-" settings.SettingsFile.expression_path
   |> OpamFilter.expand_string (append_env env @@ OpamPackageVar.resolve st)
   |> OpamFilename.of_string
 
 let inherit_source attribute settings opam =
-  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string attribute) | _ -> None) opam in
   settings.SettingsFile.inherited
   |> map_filtered_list OpamStd.Option.some
   |> List.fold_left (possibly update env) None
 
 let custom_expression st attribute settings opam =
-  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string attribute) | _ -> None) opam in
   settings.SettingsFile.custom
   |> map_filtered_list OpamStd.Option.some
   |> List.fold_left (possibly update env) None
@@ -1341,13 +1351,13 @@ let custom_expression st attribute settings opam =
   |> OpamStd.Option.map OpamFilename.of_string
 
 let extra_depexts attribute settings opam =
-  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string attribute) | _ -> None) opam in
   settings.SettingsFile.depexts
   |> List.fold_left (possibly List.append env) []
   |> List.map (OpamFilter.expand_string env)
 
 let extra_patches attribute settings opam =
-  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string @@ OpamPackage.Name.to_string attribute) | _ -> None) opam in
+  let env = ident_env_opam ~other:(function | "attribute" -> Some (OpamVariable.string attribute) | _ -> None) opam in
   settings.SettingsFile.patches
   |> OpamStd.List.filter_map (fun (p, condition) ->
     let included = OpamFilter.partial_eval env condition in
@@ -1367,9 +1377,9 @@ let nix_of_opam st ~attribute ~settings opam =
   (* TODO handle available *)
   (* TODO handle flags *)
   (* TODO handle env *)
-  let build = nix_expr_of_commands opam.build in
+  let build = nix_expr_of_commands ~refnames opam.build in
   (* TODO handle run_test *)
-  let install = nix_expr_of_commands opam.install in
+  let install = nix_expr_of_commands ~refnames opam.install in
   (* TODO handle remove *)
   (* TODO handle substs *)
   let opam_patches = map_filtered_list
@@ -1377,7 +1387,7 @@ let nix_of_opam st ~attribute ~settings opam =
     opam.patches
   in
   let extra_patches = extra_patches attribute settings opam in
-  let patches = nix_expr_of_patches (opam_patches @ map_filtered_list OpamFilename.(fun p -> nix_path (Base.to_string (basename p))) extra_patches) in
+  let patches = nix_expr_of_patches ~refnames (opam_patches @ map_filtered_list OpamFilename.(fun p -> nix_path (Base.to_string (basename p))) extra_patches) in
   (* TODO handle build_env *)
   (* TODO handle features *)
   (* TODO handle messages *)
@@ -1634,7 +1644,7 @@ let nixify =
               let opam = OpamFormatUpgrade.opam_file_from_1_2_to_2_0 opam in
               prep_nix_of_opam ~settings opam |> function
                 | `Generated nix_pkg ->
-                  OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." pp_nix_pkg nix_pkg);
+                  OpamFilename.write nix_pkg.out_path (Format.asprintf "%a@." (pp_nix_pkg ~refnames:settings.attribute_name) nix_pkg);
                   let dst = OpamFilename.dirname nix_pkg.out_path in
                   nix_pkg.tagalongs |> List.iter (fun src -> OpamFilename.copy_in src dst);
                   (fun xs -> dlist @@ `CallPackage (nix_pkg.attribute, path_adjust nix_pkg.out_path) :: xs)

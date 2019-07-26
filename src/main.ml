@@ -842,13 +842,13 @@ let string_interp_regex =
       seq [str "%{"; group (greedy notclose); opt (group (str "}%"))];
     ])
 
-let nix_expand_string s = let f = function
+let nix_expand_string ~refnames ?escape:(esc=fun x -> x) s = let f = function
   | `Delim g -> (let str = Re.Group.get g 0 in
     if str = "%%" then nix_str "%"
     else if not (OpamStd.String.ends_with ~suffix:"}%" str) then
       raise @@ Unclosed_variable_replacement str
-    else resolve_ident @@ parse_ident (String.sub str 2 (String.length str - 4)))
-  | `Text t -> nix_str (shell_escape t)
+    else resolve_ident ~refnames @@ parse_ident (String.sub str 2 (String.length str - 4)))
+  | `Text t -> nix_str (esc t)
   in
   List.fold_right (fun x -> nix_str_append (f x)) (Re.split_full string_interp_regex s) (nix_str "")
 
@@ -905,7 +905,7 @@ let nixdep_of_filtered_constraints fc =
   { is_required; ever_required = (optionality_fc <> `False); filtered_constraints; include_conditions }
 
 let nix_expr_of_arg = function
-  | CString s -> nix_list [nix_expand_string s]
+  | CString s -> nix_list [nix_expand_string ~escape:shell_escape s]
   | CIdent v -> nix_list [resolve_ident @@ parse_ident v]
 
 let nix_expr_of_patches args = `NList (

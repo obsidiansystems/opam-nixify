@@ -328,7 +328,7 @@ let nix_ver_of_pkg ~refnames pkg = nix_ver_of_nixpkg @@ nix_name ~refnames pkg
 
 let optionality_env v = match OpamVariable.Full.scope v, OpamVariable.to_string (OpamVariable.Full.variable v) with
   | Global,"build" -> Some (B true)
-  | Global,"os" -> Some (S "linux")
+  (* | Global,"os" -> Some (S "linux") *) (* can also be macos! *)
   | Global,"os-distribution" -> Some (S "nixos")
   (* | Global,"with-doc" -> Some (B true) *) (* this can actually be a problem to always do, but still want to have the option *)
   | _,_ -> None
@@ -357,7 +357,7 @@ let rec resolve_ident ~refnames = function
   | [],"with-doc" -> nix_typed `NTBool @@ nix_var "buildDocs"
   | [],"dev" -> nix_typed `NTBool @@ nix_var "buildAsDev"
   | [],"opam-version" -> nix_str "2.0.0"
-  | [],"os" -> nix_str "linux"
+  | [],"os" -> nix_if (`NAttr (nix_var "stdenv","isDarwin")) (nix_str "macos") (nix_str "linux")
   | [],"os-distribution" -> nix_str "nixos"
   | [],"os-family" -> nix_str "nixos"
   | ["ocaml"],"native" -> nix_not (`NAttr (nix_var "stdenv","isMips"))

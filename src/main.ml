@@ -247,18 +247,28 @@ let nix_impl l r = match l, r with
 let nix_if c t e = match c with
   | `NTrue -> t
   | `NFalse -> e
-  | _ -> `NIf (c,t,e)
+  | _ -> match t, e with
+    | `NTrue, `NTrue -> t
+    | `NFalse, `NFalse -> t
+    | `NTrue, `NFalse -> c
+    | `NFalse, `NTrue -> nix_not c
+    | `NStr x, `NStr y when x = y -> t
+    | `NInt x, `NInt y when x = y -> t
+    | `NNull, `NNull -> t
+    | _, _ -> `NIf (c,t,e)
 let nix_var (v : string) = `NVar v
 let nix_null = `NNull
 let nix_str (s : string) = `NStr s
 let nix_int (i : int) = `NInt i
-let nix_eq l r = match l, r with
+let rec nix_eq l r = match l, r with
   | `NTrue, `NTrue -> `NTrue
   | `NFalse, `NFalse -> `NTrue
   | `NStr x, `NStr y -> if x = y then `NTrue else `NFalse
   | `NInt x, `NInt y -> if x = y then `NTrue else `NFalse
   | `NNull, `NNull -> `NTrue
   | #nix_const, #nix_const -> `NFalse
+  | `NIf (c,t,e), #nix_const -> nix_if c (nix_eq t r) (nix_eq e r)
+  | #nix_const, `NIf (c,t,e) -> nix_if c (nix_eq l t) (nix_eq l e)
   | _, _ -> `NEq (l,r)
 let nix_neq l r = nix_not (nix_eq l r)
 let nix_ord o l r = `NOrd (o,l,r)
@@ -995,8 +1005,8 @@ let nixdeps_of_depexts depexts =
     |> function
       | None -> []
       | Some (`NList xs) -> xs |> List.map (function | `NStr name -> NixDeps.singleton name { is_required = true; ever_required = true; filtered_constraints = []; include_conditions = FBool true }
-                                                     | _ -> raise @@ Wat "depext constraint too complex")
-      | Some _ -> raise @@ Wat "depext constraint too complex")
+                                                     | x -> raise @@ Doh ("depext constraint too complex",Format.asprintf "%a" pp_nix_expr x))
+      | Some x -> raise @@ Doh ("depext constraint too complex",Format.asprintf "%a" pp_nix_expr x))
   |> List.concat
   |> NixDeps.(List.fold_left union empty)
 
